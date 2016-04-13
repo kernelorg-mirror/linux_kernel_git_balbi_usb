@@ -2061,6 +2061,7 @@ static const struct usb_gadget_ops dwc3_gadget_ops = {
 static int dwc3_gadget_init_endpoints(struct dwc3 *dwc, u8 total)
 {
 	struct dwc3_ep			*dep;
+	int				ret;
 	u8				epnum;
 
 	INIT_LIST_HEAD(&dwc->gadget.ep_list);
@@ -2101,7 +2102,6 @@ static int dwc3_gadget_init_endpoints(struct dwc3 *dwc, u8 total)
 			int mdwidth;
 			int kbytes;
 			int size;
-			int ret;
 
 			mdwidth = DWC3_MDWIDTH(dwc->hwparams.hwparams0);
 			/* MDWIDTH is represented in bits, we need it in bytes */
@@ -2131,23 +2131,17 @@ static int dwc3_gadget_init_endpoints(struct dwc3 *dwc, u8 total)
 			dep->endpoint.ops = &dwc3_gadget_ep_ops;
 			list_add_tail(&dep->endpoint.ep_list,
 					&dwc->gadget.ep_list);
-
-			ret = dwc3_alloc_trb_pool(dep);
-			if (ret)
-				return ret;
 		} else {
-			int		ret;
-
 			usb_ep_set_maxpacket_limit(&dep->endpoint, 1024);
 			dep->endpoint.max_streams = 15;
 			dep->endpoint.ops = &dwc3_gadget_ep_ops;
 			list_add_tail(&dep->endpoint.ep_list,
 					&dwc->gadget.ep_list);
-
-			ret = dwc3_alloc_trb_pool(dep);
-			if (ret)
-				return ret;
 		}
+
+		ret = dwc3_alloc_trb_pool(dep);
+		if (ret)
+			return ret;
 
 		if (num == 0) {
 			dep->endpoint.caps.type_control = true;
@@ -2176,19 +2170,20 @@ static void dwc3_gadget_free_endpoints(struct dwc3 *dwc)
 		dep = dwc->eps[epnum];
 		if (!dep)
 			continue;
+
+		dwc3_free_trb_pool(dep);
+
 		/*
 		 * Physical endpoints 0 and 1 are special; they form the
 		 * bi-directional USB endpoint 0.
 		 *
-		 * For those two physical endpoints, we don't allocate a TRB
-		 * pool nor do we add them the endpoints list. Due to that, we
-		 * shouldn't do these two operations otherwise we would end up
-		 * with all sorts of bugs when removing dwc3.ko.
+		 * For those two physical endpoints, we don't add them the
+		 * endpoints list. Due to that, we shouldn't try to list_del()
+		 * them from said endpoints list otherwise we would end up with
+		 * all sorts of bugs when removing dwc3.ko.
 		 */
-		if (epnum != 0 && epnum != 1) {
-			dwc3_free_trb_pool(dep);
+		if (epnum != 0 && epnum != 1)
 			list_del(&dep->endpoint.ep_list);
-		}
 
 		kfree(dep);
 	}
