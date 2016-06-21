@@ -264,7 +264,7 @@ static void dwc3_omap_set_mailbox(struct dwc3_omap *omap,
 		break;
 
 	default:
-		dev_WARN(omap->dev, "invalid state\n");
+		dev_WARN(omap->dev, true, "invalid state\n");
 	}
 }
 
@@ -391,7 +391,7 @@ static void dwc3_omap_set_utmi_mode(struct dwc3_omap *omap)
 		reg &= ~USBOTGSS_UTMI_OTG_CTRL_SW_MODE;
 		break;
 	default:
-		dev_WARN(omap->dev, "UNKNOWN utmi mode %d\n", utmi_mode);
+		dev_WARN(omap->dev, true, "UNKNOWN utmi mode %d\n", utmi_mode);
 	}
 
 	dwc3_omap_write_utmi_ctrl(omap, reg);
