@@ -785,6 +785,13 @@ int usb_gadget_map_request_by_dev(struct device *dev,
 	if (req->length == 0)
 		return 0;
 
+	/*
+	 * if req->dma isn't DMA_ADDR_INVALID, assume buffer is
+	 * already mapped, or has been allocated with dma_alloc_coherent()
+	 */
+	if (req->dma != DMA_ADDR_INVALID)
+		return 0;
+
 	if (req->num_sgs) {
 		int     mapped;
 
@@ -843,6 +850,8 @@ void usb_gadget_unmap_request_by_dev(struct device *dev,
 				is_in ? DMA_TO_DEVICE : DMA_FROM_DEVICE);
 		req->dma_mapped = 0;
 	}
+
+	req->dma = DMA_ADDR_INVALID;
 }
 EXPORT_SYMBOL_GPL(usb_gadget_unmap_request_by_dev);
 
