@@ -277,6 +277,7 @@ static struct usb_request *fusb300_alloc_request(struct usb_ep *_ep,
 	if (!req)
 		return NULL;
 	INIT_LIST_HEAD(&req->queue);
+	req->req.dma = DMA_ADDR_INVALID;
 
 	return &req->req;
 }

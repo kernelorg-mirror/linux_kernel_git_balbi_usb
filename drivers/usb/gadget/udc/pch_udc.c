@@ -209,7 +209,6 @@ static int vbus_gpio_port = -1;		/* GPIO port number (-1:Not used) */
 /* DMA */
 #define DMA_DIR_RX		1	/* DMA for data receive */
 #define DMA_DIR_TX		2	/* DMA for data transmit */
-#define DMA_ADDR_INVALID	(~(dma_addr_t)0)
 #define UDC_DMA_MAXPACKET	65536	/* maximum packet size for DMA */
 
 /**

@@ -537,7 +537,7 @@ udc_alloc_request(struct usb_ep *usbep, gfp_t gfp)
 	if (!req)
 		return NULL;
 
-	req->req.dma = DMA_DONT_USE;
+	req->req.dma = DMA_ADDR_INVALID;
 	INIT_LIST_HEAD(&req->queue);
 
 	if (ep->dma) {
@@ -557,7 +557,7 @@ udc_alloc_request(struct usb_ep *usbep, gfp_t gfp)
 		dma_desc->status = AMD_ADDBITS(dma_desc->status,
 						UDC_DMA_STP_STS_BS_HOST_BUSY,
 						UDC_DMA_STP_STS_BS);
-		dma_desc->bufptr = cpu_to_le32(DMA_DONT_USE);
+		dma_desc->bufptr = cpu_to_le32(DMA_ADDR_INVALID);
 		req->td_data = dma_desc;
 		req->td_data_last = NULL;
 		req->chain_len = 1;
@@ -778,7 +778,7 @@ static int udc_create_dma_chain(
 
 	VDBG(ep->dev, "udc_create_dma_chain: bytes=%ld buf_len=%ld\n",
 	     bytes, buf_len);
-	dma_addr = DMA_DONT_USE;
+	dma_addr = DMA_ADDR_INVALID;
 
 	/* unset L bit in first desc for OUT */
 	if (!ep->in)

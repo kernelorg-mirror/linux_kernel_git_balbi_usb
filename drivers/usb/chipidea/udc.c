@@ -1342,6 +1342,8 @@ static struct usb_request *ep_alloc_request(struct usb_ep *ep, gfp_t gfp_flags)
 		INIT_LIST_HEAD(&hwreq->tds);
 	}
 
+	hwreq->req.dma = DMA_ADDR_INVALID;
+
 	return (hwreq == NULL) ? NULL : &hwreq->req;
 }
 

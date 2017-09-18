@@ -836,6 +836,8 @@ static struct usb_request *s3c_hsudc_alloc_request(struct usb_ep *_ep,
 		return NULL;
 
 	INIT_LIST_HEAD(&hsreq->queue);
+	hsreq->req.dma = DMA_ADDR_INVALID;
+
 	return &hsreq->req;
 }
 

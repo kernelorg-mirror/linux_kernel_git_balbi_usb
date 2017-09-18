@@ -274,6 +274,8 @@ goku_alloc_request(struct usb_ep *_ep, gfp_t gfp_flags)
 		return NULL;
 
 	INIT_LIST_HEAD(&req->queue);
+	req->req.dma = DMA_ADDR_INVALID;
+
 	return &req->req;
 }
 

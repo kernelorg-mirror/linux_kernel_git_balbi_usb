@@ -382,6 +382,7 @@ static struct usb_request *dwc2_hsotg_ep_alloc_request(struct usb_ep *ep,
 		return NULL;
 
 	INIT_LIST_HEAD(&req->queue);
+	req->req.dma = DMA_ADDR_INVALID;
 
 	return &req->req;
 }

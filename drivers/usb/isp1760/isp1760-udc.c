@@ -815,6 +815,8 @@ static struct usb_request *isp1760_ep_alloc_request(struct usb_ep *ep,
 	if (!req)
 		return NULL;
 
+	req->req.dma = DMA_ADDR_INVALID;
+
 	return &req->req;
 }
 

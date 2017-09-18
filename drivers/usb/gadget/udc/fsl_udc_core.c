@@ -54,8 +54,6 @@
 #define	DRIVER_AUTHOR	"Li Yang/Jiang Bo"
 #define	DRIVER_VERSION	"Apr 20, 2007"
 
-#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
-
 static const char driver_name[] = "fsl-usb2-udc";
 static const char driver_desc[] = DRIVER_DESC;
 

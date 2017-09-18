@@ -60,8 +60,6 @@ struct musb_hw_ep;
  *    whether shared with the Inventra core or separate.
  */
 
-#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
-
 #ifdef CONFIG_MUSB_PIO_ONLY
 #define	is_dma_capable()	(0)
 #else

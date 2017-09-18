@@ -304,6 +304,7 @@ static struct usb_request *vep_alloc_request(struct usb_ep *_ep,
 		return NULL;
 
 	INIT_LIST_HEAD(&req->req_entry);
+	req->req.dma = DMA_ADDR_INVALID;
 
 	return &req->req;
 }

@@ -48,8 +48,6 @@
 #define DRIVER_AUTHOR   "Xie XiaoBo"
 #define DRIVER_VERSION  "1.0"
 
-#define DMA_ADDR_INVALID        (~(dma_addr_t)0)
-
 static const char driver_name[] = "fsl_qe_udc";
 static const char driver_desc[] = DRIVER_DESC;
 

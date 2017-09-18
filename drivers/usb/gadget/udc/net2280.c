@@ -579,6 +579,9 @@ static struct usb_request
 		td->dmadesc = td->dmaaddr;
 		req->td = td;
 	}
+
+	req->req.dma = DMA_ADDR_INVALID;
+
 	return &req->req;
 }
 

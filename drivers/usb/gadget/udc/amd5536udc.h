@@ -347,9 +347,6 @@
 /* max dma packet */
 #define UDC_DMA_MAXPACKET			65536
 
-/* un-usable DMA address */
-#define DMA_DONT_USE				(~(dma_addr_t) 0 )
-
 /* other Endpoint register addresses and values-----------------------------*/
 #define UDC_EP_SUBPTR_ADDR			0x10
 #define UDC_EP_DESPTR_ADDR			0x14

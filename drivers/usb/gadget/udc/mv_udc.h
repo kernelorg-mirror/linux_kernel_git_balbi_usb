@@ -19,8 +19,6 @@
 #define EP_DIR_IN	1
 #define EP_DIR_OUT	0
 
-#define DMA_ADDR_INVALID	(~(dma_addr_t)0)
-
 #define EP0_MAX_PKT_SIZE	64
 /* ep0 transfer state */
 #define WAIT_FOR_SETUP		0

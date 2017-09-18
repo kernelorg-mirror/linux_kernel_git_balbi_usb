@@ -58,7 +58,6 @@ struct mtu3_request;
 #define SSUSB_U2_CTRL(p)	(U3D_SSUSB_U2_CTRL_0P + ((p) * 0x08))
 
 #define MTU3_DRIVER_NAME	"mtu3"
-#define	DMA_ADDR_INVALID	(~(dma_addr_t)0)
 
 #define MTU3_EP_ENABLED		BIT(0)
 #define MTU3_EP_STALL		BIT(1)

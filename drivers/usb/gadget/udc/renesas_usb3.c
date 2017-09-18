@@ -2129,6 +2129,7 @@ static struct usb_request *__renesas_usb3_ep_alloc_request(gfp_t gfp_flags)
 		return NULL;
 
 	INIT_LIST_HEAD(&usb3_req->queue);
+	usb3_req->req.dma = DMA_ADDR_INVALID;
 
 	return &usb3_req->req;
 }

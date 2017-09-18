@@ -30,8 +30,6 @@
 #define BRCM_BDC_NAME "bdc"
 #define BRCM_BDC_DESC "Broadcom USB Device Controller driver"
 
-#define DMA_ADDR_INVALID        (~(dma_addr_t)0)
-
 /* BDC command operation timeout in usec*/
 #define BDC_CMD_TIMEOUT	1000
 /* BDC controller operation timeout in usec*/

@@ -978,6 +978,8 @@ static struct usb_request *xudc_ep_alloc_request(struct usb_ep *_ep,
 
 	req->ep = ep;
 	INIT_LIST_HEAD(&req->queue);
+	req->usb_req.dma = DMA_ADDR_INVALID;
+
 	return &req->usb_req;
 }
 
