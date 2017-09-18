@@ -889,9 +889,23 @@ static void __dwc3_prepare_one_trb(struct dwc3_ep *dep, struct dwc3_trb *trb,
 
 	switch (usb_endpoint_type(dep->endpoint.desc)) {
 	case USB_ENDPOINT_XFER_CONTROL:
-		trb->ctrl = DWC3_TRBCTL_CONTROL_SETUP;
+		switch (dwc->ep0state) {
+		case EP0_SETUP_PHASE:
+			trb->ctrl = DWC3_TRBCTL_CONTROL_SETUP;
+			break;
+		case EP0_DATA_PHASE:
+			trb->ctrl = DWC3_TRBCTL_CONTROL_DATA;
+			break;
+		case EP0_STATUS_PHASE:
+			trb->ctrl = dwc->three_stage_setup ?
+				DWC3_TRBCTL_CONTROL_STATUS3 :
+				DWC3_TRBCTL_CONTROL_STATUS2;
+			break;
+		default:
+			/* nothing */
+			break;
+		}
 		break;
-
 	case USB_ENDPOINT_XFER_ISOC:
 		if (!node) {
 			trb->ctrl = DWC3_TRBCTL_ISOCHRONOUS_FIRST;
