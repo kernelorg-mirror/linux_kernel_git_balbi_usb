@@ -877,7 +877,7 @@ struct dwc3 {
 	dma_addr_t		ep0_trb_addr;
 	dma_addr_t		bounce_addr;
 	dma_addr_t		scratch_addr;
-	struct dwc3_request	ep0_usb_req;
+	struct usb_request	*ep0_usb_req;
 	struct completion	ep0_in_setup;
 
 	/* device lock */

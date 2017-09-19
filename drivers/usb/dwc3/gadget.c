@@ -1903,6 +1903,11 @@ static int __dwc3_gadget_start(struct dwc3 *dwc)
 		goto err1;
 	}
 
+	dwc->ep0_usb_req = usb_ep_alloc_request(&dwc->eps[0]->endpoint,
+						GFP_ATOMIC);
+	if (!dwc->ep0_usb_req)
+		goto err2;
+
 	/* begin to receive SETUP packets */
 	dwc->ep0state = EP0_SETUP_PHASE;
 	dwc3_ep0_out_start(dwc);
@@ -1910,6 +1915,9 @@ static int __dwc3_gadget_start(struct dwc3 *dwc)
 	dwc3_gadget_enable_irq(dwc);
 
 	return 0;
+
+err2:
+	__dwc3_gadget_ep_disable(dwc->eps[1]);
 
 err1:
 	__dwc3_gadget_ep_disable(dwc->eps[0]);
@@ -3293,6 +3301,7 @@ err0:
 void dwc3_gadget_exit(struct dwc3 *dwc)
 {
 	usb_del_gadget_udc(&dwc->gadget);
+	usb_ep_free_request(&dwc->eps[0]->endpoint, dwc->ep0_usb_req);
 	dwc3_gadget_free_endpoints(dwc);
 	dma_free_coherent(dwc->sysdev, DWC3_BOUNCE_SIZE, dwc->bounce,
 			  dwc->bounce_addr);

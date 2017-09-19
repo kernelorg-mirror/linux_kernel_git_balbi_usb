@@ -321,6 +321,7 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 		struct usb_ctrlrequest *ctrl)
 {
 	struct dwc3_ep		*dep;
+	struct dwc3_request	*req;
 	u32			recip;
 	u32			value;
 	u32			reg;
@@ -374,12 +375,13 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 	*response_pkt = cpu_to_le16(usb_status);
 
 	dep = dwc->eps[0];
-	dwc->ep0_usb_req.dep = dep;
-	dwc->ep0_usb_req.request.length = sizeof(*response_pkt);
-	dwc->ep0_usb_req.request.buf = dwc->setup_buf;
-	dwc->ep0_usb_req.request.complete = dwc3_ep0_noop_complete;
+	req = to_dwc3_request(dwc->ep0_usb_req);
+	req->dep = dep;
+	req->request.length = sizeof(*response_pkt);
+	req->request.buf = dwc->setup_buf;
+	req->request.complete = dwc3_ep0_noop_complete;
 
-	return __dwc3_gadget_ep0_queue(dep, &dwc->ep0_usb_req);
+	return __dwc3_gadget_ep0_queue(dep, req);
 }
 
 static int dwc3_ep0_handle_u1(struct dwc3 *dwc, enum usb_device_state state,
@@ -708,11 +710,14 @@ static void dwc3_ep0_set_sel_cmpl(struct usb_ep *ep, struct usb_request *req)
 	ret = dwc3_send_gadget_generic_command(dwc,
 			DWC3_DGCMD_SET_PERIODIC_PAR, param);
 	WARN_ON(ret < 0);
+
+	usb_ep_free_request(ep, req);
 }
 
 static int dwc3_ep0_set_sel(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 {
 	struct dwc3_ep	*dep;
+	struct usb_request *req;
 	enum usb_device_state state = dwc->gadget.state;
 	u16		wLength;
 	u16		wValue;
@@ -738,12 +743,13 @@ static int dwc3_ep0_set_sel(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 	 * wMaxPacketSize instead.
 	 */
 	dep = dwc->eps[0];
-	dwc->ep0_usb_req.dep = dep;
-	dwc->ep0_usb_req.request.length = dep->endpoint.maxpacket;
-	dwc->ep0_usb_req.request.buf = dwc->setup_buf;
-	dwc->ep0_usb_req.request.complete = dwc3_ep0_set_sel_cmpl;
+	req = usb_ep_alloc_request(&dep->endpoint, GFP_ATOMIC);
 
-	return __dwc3_gadget_ep0_queue(dep, &dwc->ep0_usb_req);
+	req->length = dep->endpoint.maxpacket;
+	req->buf = dwc->setup_buf;
+	req->complete = dwc3_ep0_set_sel_cmpl;
+
+	return __dwc3_gadget_ep0_queue(dep, to_dwc3_request(req));
 }
 
 static int dwc3_ep0_set_isoch_delay(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
