@@ -39,6 +39,10 @@ static void __dwc3_ep0_do_control_status(struct dwc3 *dwc, struct dwc3_ep *dep);
 static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
 		struct dwc3_ep *dep, struct dwc3_request *req);
 
+static void dwc3_ep0_noop_complete(struct usb_ep *ep, struct usb_request *req)
+{
+}
+
 static void dwc3_ep0_prepare_one_trb(struct dwc3_ep *dep,
 		dma_addr_t buf_dma, u32 len, u32 type, bool chain)
 {
@@ -310,9 +314,6 @@ static struct dwc3_ep *dwc3_wIndex_to_dep(struct dwc3 *dwc, __le16 wIndex_le)
 	return NULL;
 }
 
-static void dwc3_ep0_status_cmpl(struct usb_ep *ep, struct usb_request *req)
-{
-}
 /*
  * ch 9.4.5
  */
@@ -376,7 +377,7 @@ static int dwc3_ep0_handle_status(struct dwc3 *dwc,
 	dwc->ep0_usb_req.dep = dep;
 	dwc->ep0_usb_req.request.length = sizeof(*response_pkt);
 	dwc->ep0_usb_req.request.buf = dwc->setup_buf;
-	dwc->ep0_usb_req.request.complete = dwc3_ep0_status_cmpl;
+	dwc->ep0_usb_req.request.complete = dwc3_ep0_noop_complete;
 
 	return __dwc3_gadget_ep0_queue(dep, &dwc->ep0_usb_req);
 }
