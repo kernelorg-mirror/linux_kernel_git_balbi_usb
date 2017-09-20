@@ -884,7 +884,6 @@ static void dwc3_ep0_complete_data(struct dwc3 *dwc,
 	struct dwc3_ep		*ep0;
 	unsigned		maxp;
 	unsigned		remaining_ur_length;
-	void			*buf;
 	u32			transferred = 0;
 	u32			status;
 	u32			length;
@@ -911,7 +910,6 @@ static void dwc3_ep0_complete_data(struct dwc3 *dwc,
 	}
 
 	ur = &r->request;
-	buf = ur->buf;
 	remaining_ur_length = ur->length;
 
 	length = trb->size & DWC3_TRB_SIZE_MASK;
