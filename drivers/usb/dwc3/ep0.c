@@ -105,6 +105,8 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 
 	list_add_tail(&req->list, &dep->pending_list);
 
+	trace_dwc3_ep_queue(req);
+
 	/*
 	 * Gadget driver might not be quick enough to queue a request
 	 * before we get a Transfer Not Ready event on this endpoint.
