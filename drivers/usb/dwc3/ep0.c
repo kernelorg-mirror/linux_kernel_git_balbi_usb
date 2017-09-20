@@ -98,6 +98,15 @@ static int dwc3_ep0_start_trans(struct dwc3_ep *dep)
 	return 0;
 }
 
+static void __dwc3_ep0_do_control_setup(struct dwc3 *dwc, struct dwc3_ep *dep,
+					struct dwc3_request *req)
+{
+	dwc3_ep0_prepare_one_trb(dep, req->request.dma, req->request.length,
+				 DWC3_TRBCTL_CONTROL_SETUP, false);
+	req->trb = &dwc->ep0_trb[dep->trb_enqueue];
+	WARN_ON(dwc3_ep0_start_trans(dep));
+}
+
 static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 		struct dwc3_request *req)
 {
@@ -192,11 +201,18 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 
 		direction = dwc->ep0_expect_in;
 		dwc->ep0state = EP0_DATA_PHASE;
-
 		__dwc3_ep0_do_control_data(dwc, dwc->eps[direction], req);
-
 		dep->flags &= ~DWC3_EP0_DIR_IN;
+
+		return 0;
 	}
+
+	/*
+	 * If we're still in the setup phase, we should start a
+	 * transfer straight away
+	 */
+	if (dwc->ep0state == EP0_SETUP_PHASE)
+		__dwc3_ep0_do_control_setup(dwc, dwc->eps[0], req);
 
 	return 0;
 }
@@ -285,16 +301,19 @@ int dwc3_gadget_ep0_set_halt(struct usb_ep *ep, int value)
 
 void dwc3_ep0_out_start(struct dwc3 *dwc)
 {
+	struct dwc3_request		*req = to_dwc3_request(dwc->ep0_usb_req);
 	struct dwc3_ep			*dep;
-	int				ret;
 
 	complete(&dwc->ep0_in_setup);
 
 	dep = dwc->eps[0];
-	dwc3_ep0_prepare_one_trb(dep, dwc->ep0_trb_addr, 8,
-			DWC3_TRBCTL_CONTROL_SETUP, false);
-	ret = dwc3_ep0_start_trans(dep);
-	WARN_ON(ret < 0);
+	req->dep = dep;
+	req->request.length = 8;
+	req->request.buf = dwc->ep0_trb;
+	req->request.dma = dwc->ep0_trb_addr;
+	req->request.complete = dwc3_ep0_noop_complete;
+
+	WARN_ON(__dwc3_gadget_ep0_queue(dep, req));
 }
 
 static struct dwc3_ep *dwc3_wIndex_to_dep(struct dwc3 *dwc, __le16 wIndex_le)
@@ -812,6 +831,9 @@ static void dwc3_ep0_inspect_setup(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
 	struct usb_ctrlrequest *ctrl = (void *) dwc->ep0_trb;
+	struct dwc3_request *req;
+	struct dwc3_trb *trb;
+	struct dwc3_ep *ep0;
 	int ret = -EINVAL;
 	u32 len;
 
@@ -819,6 +841,15 @@ static void dwc3_ep0_inspect_setup(struct dwc3 *dwc,
 		goto out;
 
 	trace_dwc3_ctrl_req(ctrl);
+	ep0 = dwc->eps[0];
+	trb = dwc->ep0_trb;
+	trace_dwc3_complete_trb(ep0, trb);
+
+	req = next_request(&ep0->pending_list);
+	req->request.actual = req->request.length -
+		(trb->size & DWC3_TRB_SIZE_MASK);
+	if (req)
+		dwc3_gadget_giveback(ep0, req, 0);
 
 	len = le16_to_cpu(ctrl->wLength);
 	if (!len) {
@@ -938,6 +969,7 @@ static void dwc3_ep0_complete_status(struct dwc3 *dwc,
 	if (status == DWC3_TRBSTS_SETUP_PENDING)
 		dwc->setup_packet_pending = true;
 
+	dwc->three_stage_setup = false;
 	dwc->ep0state = EP0_SETUP_PHASE;
 	dwc3_ep0_out_start(dwc);
 }
