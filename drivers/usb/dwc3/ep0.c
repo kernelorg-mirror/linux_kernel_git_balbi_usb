@@ -35,9 +35,9 @@
 #include "gadget.h"
 #include "io.h"
 
-static void __dwc3_ep0_do_control_status(struct dwc3 *dwc, struct dwc3_ep *dep);
-static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
-		struct dwc3_ep *dep, struct dwc3_request *req);
+static void __dwc3_ep0_do_control_status(struct dwc3_ep *dep);
+static void __dwc3_ep0_do_control_data(struct dwc3_ep *dep,
+				       struct dwc3_request *req);
 
 static void dwc3_ep0_noop_complete(struct usb_ep *ep, struct usb_request *req)
 {
@@ -98,9 +98,11 @@ static int dwc3_ep0_start_trans(struct dwc3_ep *dep)
 	return 0;
 }
 
-static void __dwc3_ep0_do_control_setup(struct dwc3 *dwc, struct dwc3_ep *dep,
+static void __dwc3_ep0_do_control_setup(struct dwc3_ep *dep,
 					struct dwc3_request *req)
 {
+	struct dwc3			*dwc = dep->dwc;
+
 	dwc3_ep0_prepare_one_trb(dep, req->request.dma, req->request.length,
 				 DWC3_TRBCTL_CONTROL_SETUP, false);
 	req->trb = &dwc->ep0_trb[dep->trb_enqueue];
@@ -139,7 +141,7 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 			return 0;
 		}
 
-		__dwc3_ep0_do_control_data(dwc, dwc->eps[direction], req);
+		__dwc3_ep0_do_control_data(dwc->eps[direction], req);
 
 		dep->flags &= ~(DWC3_EP_PENDING_REQUEST |
 				DWC3_EP0_DIR_IN);
@@ -159,7 +161,7 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 		usb_gadget_set_state(&dwc->gadget, USB_STATE_CONFIGURED);
 
 		if (dwc->ep0state == EP0_STATUS_PHASE)
-			__dwc3_ep0_do_control_status(dwc, dwc->eps[direction]);
+			__dwc3_ep0_do_control_status(dwc->eps[direction]);
 
 		return 0;
 	}
@@ -201,7 +203,7 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 
 		direction = dwc->ep0_expect_in;
 		dwc->ep0state = EP0_DATA_PHASE;
-		__dwc3_ep0_do_control_data(dwc, dwc->eps[direction], req);
+		__dwc3_ep0_do_control_data(dwc->eps[direction], req);
 		dep->flags &= ~DWC3_EP0_DIR_IN;
 
 		return 0;
@@ -212,7 +214,7 @@ static int __dwc3_gadget_ep0_queue(struct dwc3_ep *dep,
 	 * transfer straight away
 	 */
 	if (dwc->ep0state == EP0_SETUP_PHASE)
-		__dwc3_ep0_do_control_setup(dwc, dwc->eps[0], req);
+		__dwc3_ep0_do_control_setup(dwc->eps[0], req);
 
 	return 0;
 }
@@ -272,7 +274,7 @@ static void dwc3_ep0_stall_and_restart(struct dwc3 *dwc)
 	}
 
 	dwc->ep0state = EP0_SETUP_PHASE;
-	dwc3_ep0_out_start(dwc);
+	dwc3_ep0_out_start(dep);
 }
 
 int __dwc3_gadget_ep0_set_halt(struct usb_ep *ep, int value)
@@ -299,14 +301,13 @@ int dwc3_gadget_ep0_set_halt(struct usb_ep *ep, int value)
 	return ret;
 }
 
-void dwc3_ep0_out_start(struct dwc3 *dwc)
+void dwc3_ep0_out_start(struct dwc3_ep *dep)
 {
+	struct dwc3			*dwc = dep->dwc;
 	struct dwc3_request		*req = to_dwc3_request(dwc->ep0_usb_req);
-	struct dwc3_ep			*dep;
 
 	complete(&dwc->ep0_in_setup);
 
-	dep = dwc->eps[0];
 	req->dep = dep;
 	req->request.length = 8;
 	req->request.buf = dwc->ep0_trb;
@@ -936,8 +937,8 @@ static void dwc3_ep0_complete_status(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
 	struct dwc3_request	*r;
-	struct dwc3_ep		*dep;
 	struct dwc3_trb		*trb;
+	struct dwc3_ep		*dep;
 	u32			status;
 
 	dep = dwc->eps[0];
@@ -969,7 +970,7 @@ static void dwc3_ep0_complete_status(struct dwc3 *dwc,
 
 	dwc->three_stage_setup = false;
 	dwc->ep0state = EP0_SETUP_PHASE;
-	dwc3_ep0_out_start(dwc);
+	dwc3_ep0_out_start(dep);
 }
 
 static void dwc3_ep0_xfer_complete(struct dwc3 *dwc,
@@ -998,9 +999,10 @@ static void dwc3_ep0_xfer_complete(struct dwc3 *dwc,
 	}
 }
 
-static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
-		struct dwc3_ep *dep, struct dwc3_request *req)
+static void __dwc3_ep0_do_control_data(struct dwc3_ep *dep,
+				       struct dwc3_request *req)
 {
+	struct dwc3		*dwc = dep->dwc;
 	int			ret;
 
 	req->direction = !!dep->number;
@@ -1093,20 +1095,18 @@ static int dwc3_ep0_start_control_status(struct dwc3_ep *dep)
 	return dwc3_ep0_start_trans(dep);
 }
 
-static void __dwc3_ep0_do_control_status(struct dwc3 *dwc, struct dwc3_ep *dep)
+static void __dwc3_ep0_do_control_status(struct dwc3_ep *dep)
 {
 	WARN_ON(dwc3_ep0_start_control_status(dep));
 }
 
-static void dwc3_ep0_do_control_status(struct dwc3 *dwc,
-		const struct dwc3_event_depevt *event)
+static void dwc3_ep0_do_control_status(struct dwc3_ep *dep,
+				       const struct dwc3_event_depevt *event)
 {
-	struct dwc3_ep		*dep = dwc->eps[event->endpoint_number];
-
-	__dwc3_ep0_do_control_status(dwc, dep);
+	__dwc3_ep0_do_control_status(dep);
 }
 
-static void dwc3_ep0_end_control_data(struct dwc3 *dwc, struct dwc3_ep *dep)
+static void dwc3_ep0_end_control_data(struct dwc3_ep *dep)
 {
 	struct dwc3_gadget_ep_cmd_params params;
 	u32			cmd;
@@ -1127,6 +1127,8 @@ static void dwc3_ep0_end_control_data(struct dwc3 *dwc, struct dwc3_ep *dep)
 static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 		const struct dwc3_event_depevt *event)
 {
+	struct dwc3_ep		*dep;
+
 	switch (event->status) {
 	case DEPEVT_STATUS_CONTROL_DATA:
 		/*
@@ -1139,10 +1141,12 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 		 * control endpoint.
 		 */
 		if (dwc->ep0_expect_in != event->endpoint_number) {
-			struct dwc3_ep	*dep = dwc->eps[dwc->ep0_expect_in];
+			struct dwc3_ep *ep0;
 
+			dep = dwc->eps[dwc->ep0_expect_in];
+			ep0 = dwc->eps[0];
 			dev_err(dwc->dev, "unexpected direction for Data Phase\n");
-			dwc3_ep0_end_control_data(dwc, dep);
+			dwc3_ep0_end_control_data(dep);
 			dwc3_ep0_stall_and_restart(dwc);
 			return;
 		}
@@ -1154,9 +1158,10 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 			return;
 
 		dwc->ep0state = EP0_STATUS_PHASE;
+		dep = dwc->eps[event->endpoint_number];
 
 		if (dwc->delayed_status) {
-			struct dwc3_ep *dep = dwc->eps[0];
+			struct dwc3_ep *ep0 = dwc->eps[0];
 
 			WARN_ON_ONCE(event->endpoint_number != 1);
 			/*
@@ -1164,17 +1169,17 @@ static void dwc3_ep0_xfernotready(struct dwc3 *dwc,
 			 * request for handling delay STATUS has been queued
 			 * into the list.
 			 */
-			if (!list_empty(&dep->pending_list)) {
+			if (!list_empty(&ep0->pending_list)) {
 				dwc->delayed_status = false;
 				usb_gadget_set_state(&dwc->gadget,
 						     USB_STATE_CONFIGURED);
-				dwc3_ep0_do_control_status(dwc, event);
+				dwc3_ep0_do_control_status(dep, event);
 			}
 
 			return;
 		}
 
-		dwc3_ep0_do_control_status(dwc, event);
+		dwc3_ep0_do_control_status(dep, event);
 	}
 }
 
