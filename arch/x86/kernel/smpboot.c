@@ -194,6 +194,12 @@ static void smp_callin(void)
 	smp_store_cpu_info(cpuid);
 
 	/*
+	 * The topology information must be up to date before
+	 * calibrate_delay() and notify_cpu_starting().
+	 */
+	set_cpu_sibling_map(raw_smp_processor_id());
+
+	/*
 	 * Get our bogomips.
 	 * Update loops_per_jiffy in cpu_data. Previous call to
 	 * smp_store_cpu_info() stored a value that is close but not as
@@ -203,11 +209,6 @@ static void smp_callin(void)
 	cpu_data(cpuid).loops_per_jiffy = loops_per_jiffy;
 	pr_debug("Stack at about %p\n", &cpuid);
 
-	/*
-	 * This must be done before setting cpu_online_mask
-	 * or calling notify_cpu_starting.
-	 */
-	set_cpu_sibling_map(raw_smp_processor_id());
 	wmb();
 
 	notify_cpu_starting(cpuid);
@@ -232,18 +233,19 @@ static void notrace start_secondary(void *unused)
 	 */
 	if (boot_cpu_has(X86_FEATURE_PCID))
 		__write_cr4(__read_cr4() | X86_CR4_PCIDE);
-	cpu_init();
-	x86_cpuinit.early_percpu_clock_init();
-	preempt_disable();
-	smp_callin();
-
-	enable_start_cpu0 = 0;
 
 #ifdef CONFIG_X86_32
 	/* switch away from the initial page table */
 	load_cr3(swapper_pg_dir);
 	__flush_tlb_all();
 #endif
+
+	cpu_init();
+	x86_cpuinit.early_percpu_clock_init();
+	preempt_disable();
+	smp_callin();
+
+	enable_start_cpu0 = 0;
 
 	/* otherwise gcc will move up smp_processor_id before the cpu_init */
 	barrier();
