@@ -77,6 +77,11 @@ static int of_mdiobus_register_phy(struct mii_bus *mdio,
 	if (of_property_read_bool(child, "broken-turn-around"))
 		mdio->phy_ignore_ta_mask |= 1 << addr;
 
+	of_property_read_u32(child, "reset-assert-us",
+			     &phy->mdio.reset_assert_delay);
+	of_property_read_u32(child, "reset-deassert-us",
+			     &phy->mdio.reset_deassert_delay);
+
 	/* Associate the OF node with the device structure so it
 	 * can be looked up later */
 	of_node_get(child);
@@ -198,6 +203,9 @@ int of_mdiobus_register(struct mii_bus *mdio, struct device_node *np)
 	struct device_node *child;
 	bool scanphys = false;
 	int addr, rc;
+
+	if (!np)
+		return mdiobus_register(mdio);
 
 	/* Do not continue if the node is disabled */
 	if (!of_device_is_available(np))

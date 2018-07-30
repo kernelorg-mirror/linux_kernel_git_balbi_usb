@@ -192,17 +192,6 @@ static void ftrace_pid_func(unsigned long ip, unsigned long parent_ip,
 	op->saved_func(ip, parent_ip, op, regs);
 }
 
-/**
- * clear_ftrace_function - reset the ftrace function
- *
- * This NULLs the ftrace function and in essence stops
- * tracing.  There may be lag
- */
-void clear_ftrace_function(void)
-{
-	ftrace_trace_function = ftrace_stub;
-}
-
 static void ftrace_sync(struct work_struct *work)
 {
 	/*
@@ -728,7 +717,7 @@ static int ftrace_profile_init_cpu(int cpu)
 	 */
 	size = FTRACE_PROFILE_HASH_SIZE;
 
-	stat->hash = kzalloc(sizeof(struct hlist_head) * size, GFP_KERNEL);
+	stat->hash = kcalloc(size, sizeof(struct hlist_head), GFP_KERNEL);
 
 	if (!stat->hash)
 		return -ENOMEM;
@@ -3902,14 +3891,13 @@ static bool module_exists(const char *module)
 {
 	/* All modules have the symbol __this_module */
 	const char this_mod[] = "__this_module";
-	const int modname_size = MAX_PARAM_PREFIX_LEN + sizeof(this_mod) + 1;
-	char modname[modname_size + 1];
+	char modname[MAX_PARAM_PREFIX_LEN + sizeof(this_mod) + 2];
 	unsigned long val;
 	int n;
 
-	n = snprintf(modname, modname_size + 1, "%s:%s", module, this_mod);
+	n = snprintf(modname, sizeof(modname), "%s:%s", module, this_mod);
 
-	if (n > modname_size)
+	if (n > sizeof(modname) - 1)
 		return false;
 
 	val = module_kallsyms_lookup_name(modname);
@@ -4456,7 +4444,6 @@ unregister_ftrace_function_probe_func(char *glob, struct trace_array *tr,
 		func_g.type = filter_parse_regex(glob, strlen(glob),
 						 &func_g.search, &not);
 		func_g.len = strlen(func_g.search);
-		func_g.search = glob;
 
 		/* we do not support '!' for function probes */
 		if (WARN_ON(not))
@@ -5015,7 +5002,6 @@ int ftrace_regex_release(struct inode *inode, struct file *file)
 
 	parser = &iter->parser;
 	if (trace_parser_loaded(parser)) {
-		parser->buffer[parser->idx] = 0;
 		ftrace_match_records(iter->hash, parser->buffer, parser->idx);
 	}
 
@@ -5329,7 +5315,6 @@ ftrace_graph_release(struct inode *inode, struct file *file)
 		parser = &fgd->parser;
 
 		if (trace_parser_loaded((parser))) {
-			parser->buffer[parser->idx] = 0;
 			ret = ftrace_graph_set_hash(fgd->new_hash,
 						    parser->buffer);
 		}
@@ -5518,10 +5503,10 @@ static __init int ftrace_init_dyn_tracefs(struct dentry *d_tracer)
 	ftrace_create_filter_files(&global_ops, d_tracer);
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	trace_create_file("set_graph_function", 0444, d_tracer,
+	trace_create_file("set_graph_function", 0644, d_tracer,
 				    NULL,
 				    &ftrace_graph_fops);
-	trace_create_file("set_graph_notrace", 0444, d_tracer,
+	trace_create_file("set_graph_notrace", 0644, d_tracer,
 				    NULL,
 				    &ftrace_graph_notrace_fops);
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */
@@ -6693,7 +6678,7 @@ void ftrace_kill(void)
 {
 	ftrace_disabled = 1;
 	ftrace_enabled = 0;
-	clear_ftrace_function();
+	ftrace_trace_function = ftrace_stub;
 }
 
 /**
@@ -6834,9 +6819,10 @@ static int alloc_retstack_tasklist(struct ftrace_ret_stack **ret_stack_list)
 	struct task_struct *g, *t;
 
 	for (i = 0; i < FTRACE_RETSTACK_ALLOC_SIZE; i++) {
-		ret_stack_list[i] = kmalloc(FTRACE_RETFUNC_DEPTH
-					* sizeof(struct ftrace_ret_stack),
-					GFP_KERNEL);
+		ret_stack_list[i] =
+			kmalloc_array(FTRACE_RETFUNC_DEPTH,
+				      sizeof(struct ftrace_ret_stack),
+				      GFP_KERNEL);
 		if (!ret_stack_list[i]) {
 			start = 0;
 			end = i;
@@ -6908,9 +6894,9 @@ static int start_graph_tracing(void)
 	struct ftrace_ret_stack **ret_stack_list;
 	int ret, cpu;
 
-	ret_stack_list = kmalloc(FTRACE_RETSTACK_ALLOC_SIZE *
-				sizeof(struct ftrace_ret_stack *),
-				GFP_KERNEL);
+	ret_stack_list = kmalloc_array(FTRACE_RETSTACK_ALLOC_SIZE,
+				       sizeof(struct ftrace_ret_stack *),
+				       GFP_KERNEL);
 
 	if (!ret_stack_list)
 		return -ENOMEM;
@@ -7092,9 +7078,10 @@ void ftrace_graph_init_idle_task(struct task_struct *t, int cpu)
 
 		ret_stack = per_cpu(idle_ret_stack, cpu);
 		if (!ret_stack) {
-			ret_stack = kmalloc(FTRACE_RETFUNC_DEPTH
-					    * sizeof(struct ftrace_ret_stack),
-					    GFP_KERNEL);
+			ret_stack =
+				kmalloc_array(FTRACE_RETFUNC_DEPTH,
+					      sizeof(struct ftrace_ret_stack),
+					      GFP_KERNEL);
 			if (!ret_stack)
 				return;
 			per_cpu(idle_ret_stack, cpu) = ret_stack;
@@ -7113,9 +7100,9 @@ void ftrace_graph_init_task(struct task_struct *t)
 	if (ftrace_graph_active) {
 		struct ftrace_ret_stack *ret_stack;
 
-		ret_stack = kmalloc(FTRACE_RETFUNC_DEPTH
-				* sizeof(struct ftrace_ret_stack),
-				GFP_KERNEL);
+		ret_stack = kmalloc_array(FTRACE_RETFUNC_DEPTH,
+					  sizeof(struct ftrace_ret_stack),
+					  GFP_KERNEL);
 		if (!ret_stack)
 			return;
 		graph_init_task(t, ret_stack);
