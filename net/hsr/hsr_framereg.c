@@ -318,13 +318,15 @@ void hsr_addr_subst_dest(struct hsr_node *node_src, struct sk_buff *skb,
 	node_dst = find_node_by_addr_A(&port->hsr->node_db,
 				       eth_hdr(skb)->h_dest);
 	if (!node_dst) {
-		WARN_ONCE(1, "%s: Unknown node\n", __func__);
+		if (net_ratelimit())
+			netdev_err(skb->dev, "%s: Unknown node\n", __func__);
 		return;
 	}
 	if (port->type != node_dst->addr_B_port)
 		return;
 
-	ether_addr_copy(eth_hdr(skb)->h_dest, node_dst->macaddress_B);
+	if (is_valid_ether_addr(node_dst->macaddress_B))
+		ether_addr_copy(eth_hdr(skb)->h_dest, node_dst->macaddress_B);
 }
 
 void hsr_register_frame_in(struct hsr_node *node, struct hsr_port *port,

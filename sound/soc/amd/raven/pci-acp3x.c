@@ -38,8 +38,13 @@ static int acp3x_power_on(void __iomem *acp3x_base)
 	timeout = 0;
 	while (++timeout < 500) {
 		val = rv_readl(acp3x_base + mmACP_PGFSM_STATUS);
-		if (!val)
+		if (!val) {
+			/* Set PME_EN as after ACP power On,
+			 * PME_EN gets cleared
+			 */
+			rv_writel(0x1, acp3x_base + mmACP_PME_EN);
 			return 0;
+		}
 		udelay(1);
 	}
 	return -ETIMEDOUT;
@@ -227,9 +232,7 @@ static int snd_acp3x_probe(struct pci_dev *pci,
 	}
 	pm_runtime_set_autosuspend_delay(&pci->dev, 2000);
 	pm_runtime_use_autosuspend(&pci->dev);
-	pm_runtime_set_active(&pci->dev);
 	pm_runtime_put_noidle(&pci->dev);
-	pm_runtime_enable(&pci->dev);
 	pm_runtime_allow(&pci->dev);
 	return 0;
 
@@ -298,7 +301,7 @@ static void snd_acp3x_remove(struct pci_dev *pci)
 	ret = acp3x_deinit(adata->acp3x_base);
 	if (ret)
 		dev_err(&pci->dev, "ACP de-init failed\n");
-	pm_runtime_disable(&pci->dev);
+	pm_runtime_forbid(&pci->dev);
 	pm_runtime_get_noresume(&pci->dev);
 	pci_disable_msi(pci);
 	pci_release_regions(pci);

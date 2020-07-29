@@ -13,19 +13,23 @@
 #define TTBR_ASID_MASK	(UL(0xffff) << 48)
 
 #define BP_HARDEN_EL2_SLOTS 4
+#define __BP_HARDEN_HYP_VECS_SZ (BP_HARDEN_EL2_SLOTS * SZ_2K)
 
 #ifndef __ASSEMBLY__
 
 typedef struct {
 	atomic64_t	id;
+#ifdef CONFIG_COMPAT
+	void		*sigpage;
+#endif
 	void		*vdso;
 	unsigned long	flags;
 } mm_context_t;
 
 /*
- * This macro is only used by the TLBI code, which cannot race with an
- * ASID change and therefore doesn't need to reload the counter using
- * atomic64_read.
+ * This macro is only used by the TLBI and low-level switch_mm() code,
+ * neither of which can race with an ASID change. We therefore don't
+ * need to reload the counter using atomic64_read().
  */
 #define ASID(mm)	((mm)->context.id.counter & 0xffff)
 
@@ -43,7 +47,8 @@ struct bp_hardening_data {
 
 #if (defined(CONFIG_HARDEN_BRANCH_PREDICTOR) ||	\
      defined(CONFIG_HARDEN_EL2_VECTORS))
-extern char __bp_harden_hyp_vecs_start[], __bp_harden_hyp_vecs_end[];
+
+extern char __bp_harden_hyp_vecs[];
 extern atomic_t arm64_el2_vector_last_slot;
 #endif  /* CONFIG_HARDEN_BRANCH_PREDICTOR || CONFIG_HARDEN_EL2_VECTORS */
 
