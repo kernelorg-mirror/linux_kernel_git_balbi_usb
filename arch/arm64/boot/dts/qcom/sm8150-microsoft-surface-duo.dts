@@ -25,6 +25,17 @@
 		stdout-path = "serial0:115200n8";
 	};
 
+	framebuffer0: framebuffer@9c000000 {
+		compatible = "simple-framebuffer";
+		reg = <0 0x9c000000 0 0x02400000>;
+		status = "okay";
+
+		height = <1800>;
+		width = <1350>;
+		stride = <(1350 * 4)>;
+		format = "a8r8g8b8";
+	};
+
 	vph_pwr: vph-pwr-regulator {
 		compatible = "regulator-fixed";
 		regulator-name = "vph_pwr";
@@ -470,6 +481,14 @@
 	status = "okay";
 
 	linux,code = <KEY_VOLUMEDOWN>;
+};
+
+&reserved_memory {
+	splash_region: splash_region@9c000000 {
+		/* We expect the bootloader to fill in the size */
+		reg = <0x0 0x9c000000 0x0 0x0>;
+		no-map;
+	};
 };
 
 &tlmm {
