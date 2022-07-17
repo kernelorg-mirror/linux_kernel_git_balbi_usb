@@ -185,7 +185,9 @@ static bool __dead_end_function(struct objtool_file *file, struct symbol *func,
 		"do_group_exit",
 		"stop_this_cpu",
 		"__invalid_creds",
-               "cpu_startup_entry",
+		"cpu_startup_entry",
+		"__ubsan_handle_builtin_unreachable",
+		"ex_handler_msr_mce",
 	};
 
 	if (!func)
@@ -3824,8 +3826,7 @@ static int validate_ibt(struct objtool_file *file)
 		    !strcmp(sec->name, "__bug_table")			||
 		    !strcmp(sec->name, "__ex_table")			||
 		    !strcmp(sec->name, "__jump_table")			||
-		    !strcmp(sec->name, "__mcount_loc")			||
-		    !strcmp(sec->name, "__tracepoints"))
+		    !strcmp(sec->name, "__mcount_loc"))
 			continue;
 
 		list_for_each_entry(reloc, &sec->reloc->reloc_list, list)
