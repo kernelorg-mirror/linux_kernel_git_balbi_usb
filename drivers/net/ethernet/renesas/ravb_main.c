@@ -21,14 +21,12 @@
 #include <linux/module.h>
 #include <linux/net_tstamp.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
-#include <linux/of_irq.h>
 #include <linux/of_mdio.h>
 #include <linux/of_net.h>
+#include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/sys_soc.h>
 #include <linux/reset.h>
 #include <linux/math64.h>
 
@@ -1390,11 +1388,6 @@ static void ravb_adjust_link(struct net_device *ndev)
 		phy_print_status(phydev);
 }
 
-static const struct soc_device_attribute r8a7795es10[] = {
-	{ .soc_id = "r8a7795", .revision = "ES1.0", },
-	{ /* sentinel */ }
-};
-
 /* PHY init function */
 static int ravb_phy_init(struct net_device *ndev)
 {
@@ -1434,15 +1427,6 @@ static int ravb_phy_init(struct net_device *ndev)
 		goto err_deregister_fixed_link;
 	}
 
-	/* This driver only support 10/100Mbit speeds on R-Car H3 ES1.0
-	 * at this time.
-	 */
-	if (soc_device_match(r8a7795es10)) {
-		phy_set_max_speed(phydev, SPEED_100);
-
-		netdev_info(ndev, "limited PHY to 100Mbit/s\n");
-	}
-
 	if (!info->half_duplex) {
 		/* 10BASE, Pause and Asym Pause is not supported */
 		phy_remove_link_mode(phydev, ETHTOOL_LINK_MODE_10baseT_Half_BIT);
@@ -1455,8 +1439,6 @@ static int ravb_phy_init(struct net_device *ndev)
 		phy_remove_link_mode(phydev, ETHTOOL_LINK_MODE_100baseT_Half_BIT);
 	}
 
-	/* Indicate that the MAC is responsible for managing PHY PM */
-	phydev->mac_managed_pm = true;
 	phy_attached_info(phydev);
 
 	return 0;
@@ -2379,6 +2361,8 @@ static int ravb_mdio_init(struct ravb_private *priv)
 {
 	struct platform_device *pdev = priv->pdev;
 	struct device *dev = &pdev->dev;
+	struct phy_device *phydev;
+	struct device_node *pn;
 	int error;
 
 	/* Bitbang init */
@@ -2399,6 +2383,14 @@ static int ravb_mdio_init(struct ravb_private *priv)
 	error = of_mdiobus_register(priv->mii_bus, dev->of_node);
 	if (error)
 		goto out_free_bus;
+
+	pn = of_parse_phandle(dev->of_node, "phy-handle", 0);
+	phydev = of_phy_find_device(pn);
+	if (phydev) {
+		phydev->mac_managed_pm = true;
+		put_device(&phydev->mdio.dev);
+	}
+	of_node_put(pn);
 
 	return 0;
 

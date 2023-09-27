@@ -95,7 +95,7 @@ is 0x15 and the full version number is 0x234, this file will contain
 the value 340 = 0x154.
 
 See the ``type_of_loader`` and ``ext_loader_type`` fields in
-Documentation/x86/boot.rst for additional information.
+Documentation/arch/x86/boot.rst for additional information.
 
 
 bootloader_version (x86 only)
@@ -105,7 +105,7 @@ The complete bootloader version number.  In the example above, this
 file will contain the value 564 = 0x234.
 
 See the ``type_of_loader`` and ``ext_loader_ver`` fields in
-Documentation/x86/boot.rst for additional information.
+Documentation/arch/x86/boot.rst for additional information.
 
 
 bpf_stats_enabled
@@ -448,6 +448,35 @@ unaligned traps are logged.
 See also `unaligned-trap`_ and `unaligned-dump-stack`_. On ``ia64``,
 this allows system administrators to override the
 ``IA64_THREAD_UAC_NOPRINT`` ``prctl`` and avoid logs being flooded.
+
+
+io_uring_disabled
+=================
+
+Prevents all processes from creating new io_uring instances. Enabling this
+shrinks the kernel's attack surface.
+
+= ======================================================================
+0 All processes can create io_uring instances as normal. This is the
+  default setting.
+1 io_uring creation is disabled (io_uring_setup() will fail with
+  -EPERM) for unprivileged processes not in the io_uring_group group.
+  Existing io_uring instances can still be used.  See the
+  documentation for io_uring_group for more information.
+2 io_uring creation is disabled for all processes. io_uring_setup()
+  always fails with -EPERM. Existing io_uring instances can still be
+  used.
+= ======================================================================
+
+
+io_uring_group
+==============
+
+When io_uring_disabled is set to 1, a process must either be
+privileged (CAP_SYS_ADMIN) or be in the io_uring_group group in order
+to create an io_uring instance.  If io_uring_group is set to -1 (the
+default), only processes with the CAP_SYS_ADMIN capability may create
+io_uring instances.
 
 
 kexec_load_disabled
@@ -941,16 +970,35 @@ enabled, otherwise writing to this file will return ``-EBUSY``.
 The default value is 8.
 
 
-perf_user_access (arm64 only)
-=================================
+perf_user_access (arm64 and riscv only)
+=======================================
 
-Controls user space access for reading perf event counters. When set to 1,
-user space can read performance monitor counter registers directly.
+Controls user space access for reading perf event counters.
+
+arm64
+=====
 
 The default value is 0 (access disabled).
 
-See Documentation/arm64/perf.rst for more information.
+When set to 1, user space can read performance monitor counter registers
+directly.
 
+See Documentation/arch/arm64/perf.rst for more information.
+
+riscv
+=====
+
+When set to 0, user space access is disabled.
+
+The default value is 1, user space can read performance monitor counter
+registers through perf, any direct access without perf intervention will trigger
+an illegal instruction.
+
+When set to 2, which enables legacy mode (user space has direct access to cycle
+and insret CSRs only). Note that this legacy value is deprecated and will be
+removed once all user space applications are fixed.
+
+Note that the time CSR is always directly accessible to all modes.
 
 pid_max
 =======

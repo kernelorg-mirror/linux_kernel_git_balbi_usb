@@ -7,6 +7,7 @@
 #define __IVPU_DRV_H__
 
 #include <drm/drm_device.h>
+#include <drm/drm_drv.h>
 #include <drm/drm_managed.h>
 #include <drm/drm_mm.h>
 #include <drm/drm_print.h>
@@ -22,9 +23,16 @@
 #define DRIVER_DATE "20230117"
 
 #define PCI_DEVICE_ID_MTL   0x7d1d
+#define PCI_DEVICE_ID_LNL   0x643e
+
+#define IVPU_HW_37XX	37
+#define IVPU_HW_40XX	40
 
 #define IVPU_GLOBAL_CONTEXT_MMU_SSID 0
-#define IVPU_CONTEXT_LIMIT	     64
+/* SSID 1 is used by the VPU to represent invalid context */
+#define IVPU_USER_CONTEXT_MIN_SSID   2
+#define IVPU_USER_CONTEXT_MAX_SSID   (IVPU_USER_CONTEXT_MIN_SSID + 63)
+
 #define IVPU_NUM_ENGINES	     2
 
 #define IVPU_PLATFORM_SILICON 0
@@ -70,6 +78,9 @@
 struct ivpu_wa_table {
 	bool punit_disabled;
 	bool clear_runtime_mem;
+	bool d3hot_after_power_off;
+	bool interrupt_clear_with_0;
+	bool disable_clock_relinquish;
 };
 
 struct ivpu_hw_info;
@@ -126,6 +137,7 @@ struct ivpu_file_priv {
 extern int ivpu_dbg_mask;
 extern u8 ivpu_pll_min_ratio;
 extern u8 ivpu_pll_max_ratio;
+extern bool ivpu_disable_mmu_cont_pages;
 
 #define IVPU_TEST_MODE_DISABLED  0
 #define IVPU_TEST_MODE_FW_TEST   1
@@ -139,11 +151,6 @@ void ivpu_file_priv_put(struct ivpu_file_priv **link);
 int ivpu_boot(struct ivpu_device *vdev);
 int ivpu_shutdown(struct ivpu_device *vdev);
 
-static inline bool ivpu_is_mtl(struct ivpu_device *vdev)
-{
-	return to_pci_dev(vdev->drm.dev)->device == PCI_DEVICE_ID_MTL;
-}
-
 static inline u8 ivpu_revision(struct ivpu_device *vdev)
 {
 	return to_pci_dev(vdev->drm.dev)->revision;
@@ -152,6 +159,19 @@ static inline u8 ivpu_revision(struct ivpu_device *vdev)
 static inline u16 ivpu_device_id(struct ivpu_device *vdev)
 {
 	return to_pci_dev(vdev->drm.dev)->device;
+}
+
+static inline int ivpu_hw_gen(struct ivpu_device *vdev)
+{
+	switch (ivpu_device_id(vdev)) {
+	case PCI_DEVICE_ID_MTL:
+		return IVPU_HW_37XX;
+	case PCI_DEVICE_ID_LNL:
+		return IVPU_HW_40XX;
+	default:
+		ivpu_err(vdev, "Unknown VPU device\n");
+		return 0;
+	}
 }
 
 static inline struct ivpu_device *to_ivpu_device(struct drm_device *dev)

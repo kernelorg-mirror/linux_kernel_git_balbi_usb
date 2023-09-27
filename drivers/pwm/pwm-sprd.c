@@ -7,6 +7,7 @@
 #include <linux/err.h>
 #include <linux/io.h>
 #include <linux/math64.h>
+#include <linux/mod_devicetable.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/pwm.h>
@@ -109,6 +110,7 @@ static int sprd_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
 	duty = val & SPRD_PWM_DUTY_MSK;
 	tmp = (prescale + 1) * NSEC_PER_SEC * duty;
 	state->duty_cycle = DIV_ROUND_CLOSEST_ULL(tmp, chn->clk_rate);
+	state->polarity = PWM_POLARITY_NORMAL;
 
 	/* Disable PWM clocks if the PWM channel is not in enable state. */
 	if (!state->enabled)
@@ -279,13 +281,11 @@ static int sprd_pwm_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int sprd_pwm_remove(struct platform_device *pdev)
+static void sprd_pwm_remove(struct platform_device *pdev)
 {
 	struct sprd_pwm_chip *spc = platform_get_drvdata(pdev);
 
 	pwmchip_remove(&spc->chip);
-
-	return 0;
 }
 
 static const struct of_device_id sprd_pwm_of_match[] = {
@@ -300,7 +300,7 @@ static struct platform_driver sprd_pwm_driver = {
 		.of_match_table = sprd_pwm_of_match,
 	},
 	.probe = sprd_pwm_probe,
-	.remove = sprd_pwm_remove,
+	.remove_new = sprd_pwm_remove,
 };
 
 module_platform_driver(sprd_pwm_driver);
