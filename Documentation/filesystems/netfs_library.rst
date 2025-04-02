@@ -515,7 +515,7 @@ The methods defined in the table are:
    the cache to expand a request in either direction.  This allows the cache to
    size the request appropriately for the cache granularity.
 
-   The function is passed poiners to the start and length in its parameters,
+   The function is passed pointers to the start and length in its parameters,
    plus the size of the file for reference, and adjusts the start and length
    appropriately.  It should return one of:
 
@@ -592,4 +592,3 @@ API Function Reference
 
 .. kernel-doc:: include/linux/netfs.h
 .. kernel-doc:: fs/netfs/buffered_read.c
-.. kernel-doc:: fs/netfs/io.c

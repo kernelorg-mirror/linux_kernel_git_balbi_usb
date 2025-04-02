@@ -456,15 +456,17 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		if (!rex_w)
 			break;
 
-		/* skip RIP relative displacement */
-		if (is_RIP())
-			break;
-
 		/* skip nontrivial SIB */
 		if (have_SIB()) {
 			modrm_rm = sib_base;
 			if (sib_index != CFI_SP)
 				break;
+		}
+
+		/* lea disp(%rip), %dst */
+		if (is_RIP()) {
+			insn->type = INSN_LEA_RIP;
+			break;
 		}
 
 		/* lea disp(%src), %dst */
@@ -737,7 +739,10 @@ int arch_decode_instruction(struct objtool_file *file, const struct section *sec
 		break;
 	}
 
-	insn->immediate = ins.immediate.nbytes ? ins.immediate.value : 0;
+	if (ins.immediate.nbytes)
+		insn->immediate = ins.immediate.value;
+	else if (ins.displacement.nbytes)
+		insn->immediate = ins.displacement.value;
 
 	return 0;
 }
@@ -845,5 +850,19 @@ bool arch_is_rethunk(struct symbol *sym)
 bool arch_is_embedded_insn(struct symbol *sym)
 {
 	return !strcmp(sym->name, "retbleed_return_thunk") ||
+	       !strcmp(sym->name, "srso_alias_safe_ret") ||
 	       !strcmp(sym->name, "srso_safe_ret");
+}
+
+unsigned int arch_reloc_size(struct reloc *reloc)
+{
+	switch (reloc_type(reloc)) {
+	case R_X86_64_32:
+	case R_X86_64_32S:
+	case R_X86_64_PC32:
+	case R_X86_64_PLT32:
+		return 4;
+	default:
+		return 8;
+	}
 }

@@ -250,7 +250,7 @@ int cxl_trigger_poison_list(struct cxl_memdev *cxlmd)
 
 	return rc;
 }
-EXPORT_SYMBOL_NS_GPL(cxl_trigger_poison_list, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_trigger_poison_list, "CXL");
 
 static int cxl_validate_poison_dpa(struct cxl_memdev *cxlmd, u64 dpa)
 {
@@ -329,7 +329,7 @@ out:
 
 	return rc;
 }
-EXPORT_SYMBOL_NS_GPL(cxl_inject_poison, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_inject_poison, "CXL");
 
 int cxl_clear_poison(struct cxl_memdev *cxlmd, u64 dpa)
 {
@@ -393,7 +393,7 @@ out:
 
 	return rc;
 }
-EXPORT_SYMBOL_NS_GPL(cxl_clear_poison, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_clear_poison, "CXL");
 
 static struct attribute *cxl_memdev_attributes[] = {
 	&dev_attr_serial.attr,
@@ -537,7 +537,7 @@ void cxl_memdev_update_perf(struct cxl_memdev *cxlmd)
 	sysfs_update_group(&cxlmd->dev.kobj, &cxl_memdev_ram_attribute_group);
 	sysfs_update_group(&cxlmd->dev.kobj, &cxl_memdev_pmem_attribute_group);
 }
-EXPORT_SYMBOL_NS_GPL(cxl_memdev_update_perf, CXL);
+EXPORT_SYMBOL_NS_GPL(cxl_memdev_update_perf, "CXL");
 
 static const struct device_type cxl_memdev_type = {
 	.name = "cxl_memdev",
@@ -550,7 +550,7 @@ bool is_cxl_memdev(const struct device *dev)
 {
 	return dev->type == &cxl_memdev_type;
 }
-EXPORT_SYMBOL_NS_GPL(is_cxl_memdev, CXL);
+EXPORT_SYMBOL_NS_GPL(is_cxl_memdev, "CXL");
 
 /**
  * set_exclusive_cxl_commands() - atomically disable user cxl commands
@@ -564,12 +564,14 @@ EXPORT_SYMBOL_NS_GPL(is_cxl_memdev, CXL);
 void set_exclusive_cxl_commands(struct cxl_memdev_state *mds,
 				unsigned long *cmds)
 {
+	struct cxl_mailbox *cxl_mbox = &mds->cxlds.cxl_mbox;
+
 	down_write(&cxl_memdev_rwsem);
-	bitmap_or(mds->exclusive_cmds, mds->exclusive_cmds, cmds,
-		  CXL_MEM_COMMAND_ID_MAX);
+	bitmap_or(cxl_mbox->exclusive_cmds, cxl_mbox->exclusive_cmds,
+		  cmds, CXL_MEM_COMMAND_ID_MAX);
 	up_write(&cxl_memdev_rwsem);
 }
-EXPORT_SYMBOL_NS_GPL(set_exclusive_cxl_commands, CXL);
+EXPORT_SYMBOL_NS_GPL(set_exclusive_cxl_commands, "CXL");
 
 /**
  * clear_exclusive_cxl_commands() - atomically enable user cxl commands
@@ -579,12 +581,14 @@ EXPORT_SYMBOL_NS_GPL(set_exclusive_cxl_commands, CXL);
 void clear_exclusive_cxl_commands(struct cxl_memdev_state *mds,
 				  unsigned long *cmds)
 {
+	struct cxl_mailbox *cxl_mbox = &mds->cxlds.cxl_mbox;
+
 	down_write(&cxl_memdev_rwsem);
-	bitmap_andnot(mds->exclusive_cmds, mds->exclusive_cmds, cmds,
-		      CXL_MEM_COMMAND_ID_MAX);
+	bitmap_andnot(cxl_mbox->exclusive_cmds, cxl_mbox->exclusive_cmds,
+		      cmds, CXL_MEM_COMMAND_ID_MAX);
 	up_write(&cxl_memdev_rwsem);
 }
-EXPORT_SYMBOL_NS_GPL(clear_exclusive_cxl_commands, CXL);
+EXPORT_SYMBOL_NS_GPL(clear_exclusive_cxl_commands, "CXL");
 
 static void cxl_memdev_shutdown(struct device *dev)
 {
@@ -656,11 +660,14 @@ err:
 static long __cxl_memdev_ioctl(struct cxl_memdev *cxlmd, unsigned int cmd,
 			       unsigned long arg)
 {
+	struct cxl_memdev_state *mds = to_cxl_memdev_state(cxlmd->cxlds);
+	struct cxl_mailbox *cxl_mbox = &mds->cxlds.cxl_mbox;
+
 	switch (cmd) {
 	case CXL_MEM_QUERY_COMMANDS:
-		return cxl_query_cmd(cxlmd, (void __user *)arg);
+		return cxl_query_cmd(cxl_mbox, (void __user *)arg);
 	case CXL_MEM_SEND_COMMAND:
-		return cxl_send_cmd(cxlmd, (void __user *)arg);
+		return cxl_send_cmd(cxl_mbox, (void __user *)arg);
 	default:
 		return -ENOTTY;
 	}
@@ -994,10 +1001,11 @@ static void cxl_remove_fw_upload(void *fwl)
 int devm_cxl_setup_fw_upload(struct device *host, struct cxl_memdev_state *mds)
 {
 	struct cxl_dev_state *cxlds = &mds->cxlds;
+	struct cxl_mailbox *cxl_mbox = &cxlds->cxl_mbox;
 	struct device *dev = &cxlds->cxlmd->dev;
 	struct fw_upload *fwl;
 
-	if (!test_bit(CXL_MEM_COMMAND_ID_GET_FW_INFO, mds->enabled_cmds))
+	if (!test_bit(CXL_MEM_COMMAND_ID_GET_FW_INFO, cxl_mbox->enabled_cmds))
 		return 0;
 
 	fwl = firmware_upload_register(THIS_MODULE, dev, dev_name(dev),
@@ -1006,7 +1014,7 @@ int devm_cxl_setup_fw_upload(struct device *host, struct cxl_memdev_state *mds)
 		return PTR_ERR(fwl);
 	return devm_add_action_or_reset(host, cxl_remove_fw_upload, fwl);
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_setup_fw_upload, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_setup_fw_upload, "CXL");
 
 static const struct file_operations cxl_memdev_fops = {
 	.owner = THIS_MODULE,
@@ -1060,7 +1068,7 @@ err:
 	put_device(dev);
 	return ERR_PTR(rc);
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_add_memdev, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_add_memdev, "CXL");
 
 static void sanitize_teardown_notifier(void *data)
 {
@@ -1105,7 +1113,7 @@ int devm_cxl_sanitize_setup_notifier(struct device *host,
 
 	return devm_add_action_or_reset(host, sanitize_teardown_notifier, mds);
 }
-EXPORT_SYMBOL_NS_GPL(devm_cxl_sanitize_setup_notifier, CXL);
+EXPORT_SYMBOL_NS_GPL(devm_cxl_sanitize_setup_notifier, "CXL");
 
 __init int cxl_memdev_init(void)
 {

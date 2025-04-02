@@ -843,26 +843,6 @@ bfad_drv_init(struct bfad_s *bfad)
 }
 
 void
-bfad_drv_uninit(struct bfad_s *bfad)
-{
-	unsigned long   flags;
-
-	spin_lock_irqsave(&bfad->bfad_lock, flags);
-	init_completion(&bfad->comp);
-	bfa_iocfc_stop(&bfad->bfa);
-	spin_unlock_irqrestore(&bfad->bfad_lock, flags);
-	wait_for_completion(&bfad->comp);
-
-	del_timer_sync(&bfad->hal_tmo);
-	bfa_isr_disable(&bfad->bfa);
-	bfa_detach(&bfad->bfa);
-	bfad_remove_intr(bfad);
-	bfad_hal_mem_release(bfad);
-
-	bfad->bfad_flags &= ~BFAD_DRV_INIT_DONE;
-}
-
-void
 bfad_drv_start(struct bfad_s *bfad)
 {
 	unsigned long	flags;
@@ -1662,7 +1642,7 @@ MODULE_DEVICE_TABLE(pci, bfad_id_table);
 /*
  * PCI error recovery handlers.
  */
-static struct pci_error_handlers bfad_err_handler = {
+static const struct pci_error_handlers bfad_err_handler = {
 	.error_detected = bfad_pci_error_detected,
 	.slot_reset = bfad_pci_slot_reset,
 	.mmio_enabled = bfad_pci_mmio_enabled,
@@ -1693,9 +1673,8 @@ bfad_init(void)
 
 	error = bfad_im_module_init();
 	if (error) {
-		error = -ENOMEM;
 		printk(KERN_WARNING "bfad_im_module_init failure\n");
-		goto ext;
+		return -ENOMEM;
 	}
 
 	if (strcmp(FCPI_NAME, " fcpim") == 0)

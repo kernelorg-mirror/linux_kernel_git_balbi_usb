@@ -651,8 +651,8 @@ svc_init_buffer(struct svc_rqst *rqstp, unsigned int size, int node)
 	if (pages > RPCSVC_MAXPAGES)
 		pages = RPCSVC_MAXPAGES;
 
-	ret = alloc_pages_bulk_array_node(GFP_KERNEL, node, pages,
-					  rqstp->rq_pages);
+	ret = alloc_pages_bulk_node(GFP_KERNEL, node, pages,
+				    rqstp->rq_pages);
 	return ret == pages;
 }
 
@@ -1321,7 +1321,7 @@ static int
 svc_process_common(struct svc_rqst *rqstp)
 {
 	struct xdr_stream	*xdr = &rqstp->rq_res_stream;
-	struct svc_program	*progp;
+	struct svc_program	*progp = NULL;
 	const struct svc_procedure *procp = NULL;
 	struct svc_serv		*serv = rqstp->rq_server;
 	struct svc_process_info process;
@@ -1351,12 +1351,9 @@ svc_process_common(struct svc_rqst *rqstp)
 	rqstp->rq_vers = be32_to_cpup(p++);
 	rqstp->rq_proc = be32_to_cpup(p);
 
-	for (pr = 0; pr < serv->sv_nprogs; pr++) {
-		progp = &serv->sv_programs[pr];
-
-		if (rqstp->rq_prog == progp->pg_prog)
-			break;
-	}
+	for (pr = 0; pr < serv->sv_nprogs; pr++)
+		if (rqstp->rq_prog == serv->sv_programs[pr].pg_prog)
+			progp = &serv->sv_programs[pr];
 
 	/*
 	 * Decode auth data, and add verifier to reply buffer.

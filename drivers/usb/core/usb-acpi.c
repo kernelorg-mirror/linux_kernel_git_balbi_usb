@@ -170,11 +170,11 @@ static int usb_acpi_add_usb4_devlink(struct usb_device *udev)
 	struct fwnode_handle *nhi_fwnode __free(fwnode_handle) =
 		fwnode_find_reference(dev_fwnode(&port_dev->dev), "usb4-host-interface", 0);
 
-	if (IS_ERR(nhi_fwnode))
+	if (IS_ERR(nhi_fwnode) || !nhi_fwnode->dev)
 		return 0;
 
 	link = device_link_add(&port_dev->child->dev, nhi_fwnode->dev,
-			       DL_FLAG_AUTOREMOVE_CONSUMER |
+			       DL_FLAG_STATELESS |
 			       DL_FLAG_RPM_ACTIVE |
 			       DL_FLAG_PM_RUNTIME);
 	if (!link) {
@@ -213,8 +213,7 @@ usb_acpi_get_connect_type(struct usb_port *port_dev, acpi_handle *handle)
 	 * no connectable, the port would be not used.
 	 */
 
-	status = acpi_get_physical_device_location(handle, &pld);
-	if (ACPI_SUCCESS(status) && pld)
+	if (acpi_get_physical_device_location(handle, &pld) && pld)
 		port_dev->location = USB_ACPI_LOCATION_VALID |
 			pld->group_token << 8 | pld->group_position;
 

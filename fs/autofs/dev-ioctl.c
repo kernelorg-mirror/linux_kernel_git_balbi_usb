@@ -110,6 +110,7 @@ static inline void free_dev_ioctl(struct autofs_dev_ioctl *param)
  */
 static int validate_dev_ioctl(int cmd, struct autofs_dev_ioctl *param)
 {
+	unsigned int inr = _IOC_NR(cmd);
 	int err;
 
 	err = check_dev_ioctl_version(cmd, param);
@@ -133,7 +134,7 @@ static int validate_dev_ioctl(int cmd, struct autofs_dev_ioctl *param)
 		 * check_name() return for AUTOFS_DEV_IOCTL_TIMEOUT_CMD.
 		 */
 		err = check_name(param->path);
-		if (cmd == AUTOFS_DEV_IOCTL_TIMEOUT_CMD)
+		if (inr == AUTOFS_DEV_IOCTL_TIMEOUT_CMD)
 			err = err ? 0 : -EINVAL;
 		if (err) {
 			pr_warn("invalid path supplied for cmd(0x%08x)\n",
@@ -141,8 +142,6 @@ static int validate_dev_ioctl(int cmd, struct autofs_dev_ioctl *param)
 			goto out;
 		}
 	} else {
-		unsigned int inr = _IOC_NR(cmd);
-
 		if (inr == AUTOFS_DEV_IOCTL_OPENMOUNT_CMD ||
 		    inr == AUTOFS_DEV_IOCTL_REQUESTER_CMD ||
 		    inr == AUTOFS_DEV_IOCTL_ISMOUNTPOINT_CMD) {
@@ -443,7 +442,6 @@ static int autofs_dev_ioctl_timeout(struct file *fp,
 		sbi->exp_timeout = timeout * HZ;
 	} else {
 		struct dentry *base = fp->f_path.dentry;
-		struct inode *inode = base->d_inode;
 		int path_len = param->size - AUTOFS_DEV_IOCTL_SIZE - 1;
 		struct dentry *dentry;
 		struct autofs_info *ino;
@@ -461,9 +459,7 @@ static int autofs_dev_ioctl_timeout(struct file *fp,
 				"the parent autofs mount timeout which could "
 				"prevent shutdown\n");
 
-		inode_lock_shared(inode);
 		dentry = try_lookup_one_len(param->path, base, path_len);
-		inode_unlock_shared(inode);
 		if (IS_ERR_OR_NULL(dentry))
 			return dentry ? PTR_ERR(dentry) : -ENOENT;
 		ino = autofs_dentry_ino(dentry);

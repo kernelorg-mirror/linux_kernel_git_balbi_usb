@@ -23,7 +23,7 @@
 #include <linux/fips.h>
 #include <linux/module.h>
 #include <linux/once.h>
-#include <linux/random.h>
+#include <linux/prandom.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -33,12 +33,13 @@
 #include <crypto/akcipher.h>
 #include <crypto/kpp.h>
 #include <crypto/acompress.h>
+#include <crypto/sig.h>
 #include <crypto/internal/cipher.h>
 #include <crypto/internal/simd.h>
 
 #include "internal.h"
 
-MODULE_IMPORT_NS(CRYPTO_INTERNAL);
+MODULE_IMPORT_NS("CRYPTO_INTERNAL");
 
 static bool notests;
 module_param(notests, bool, 0644);
@@ -56,6 +57,9 @@ static unsigned int fuzz_iterations = 100;
 module_param(fuzz_iterations, uint, 0644);
 MODULE_PARM_DESC(fuzz_iterations, "number of fuzz test iterations");
 #endif
+
+/* Multibuffer is unlimited.  Set arbitrary limit for testing. */
+#define MAX_MB_MSGS	16
 
 #ifdef CONFIG_CRYPTO_MANAGER_DISABLE_TESTS
 
@@ -131,6 +135,11 @@ struct akcipher_test_suite {
 	unsigned int count;
 };
 
+struct sig_test_suite {
+	const struct sig_testvec *vecs;
+	unsigned int count;
+};
+
 struct kpp_test_suite {
 	const struct kpp_testvec *vecs;
 	unsigned int count;
@@ -151,6 +160,7 @@ struct alg_test_desc {
 		struct cprng_test_suite cprng;
 		struct drbg_test_suite drbg;
 		struct akcipher_test_suite akcipher;
+		struct sig_test_suite sig;
 		struct kpp_test_suite kpp;
 	} suite;
 };
@@ -292,6 +302,13 @@ struct test_sg_division {
  * @key_offset_relative_to_alignmask: if true, add the algorithm's alignmask to
  *				      the @key_offset
  * @finalization_type: what finalization function to use for hashes
+ * @multibuffer: test with multibuffer
+ * @multibuffer_index: random number used to generate the message index to use
+ *		       for multibuffer.
+ * @multibuffer_uneven: test with multibuffer using uneven lengths
+ * @multibuffer_lens: random lengths to make chained request uneven
+ * @multibuffer_count: random number used to generate the num_msgs parameter
+ *		       for multibuffer
  * @nosimd: execute with SIMD disabled?  Requires !CRYPTO_TFM_REQ_MAY_SLEEP.
  *	    This applies to the parts of the operation that aren't controlled
  *	    individually by @nosimd_setkey or @src_divs[].nosimd.
@@ -311,6 +328,11 @@ struct testvec_config {
 	enum finalization_type finalization_type;
 	bool nosimd;
 	bool nosimd_setkey;
+	bool multibuffer;
+	unsigned int multibuffer_index;
+	unsigned int multibuffer_count;
+	bool multibuffer_uneven;
+	unsigned int multibuffer_lens[MAX_MB_MSGS];
 };
 
 #define TESTVEC_CONFIG_NAMELEN	192
@@ -550,6 +572,7 @@ struct test_sglist {
 	char *bufs[XBUFSIZE];
 	struct scatterlist sgl[XBUFSIZE];
 	struct scatterlist sgl_saved[XBUFSIZE];
+	struct scatterlist full_sgl[XBUFSIZE];
 	struct scatterlist *sgl_ptr;
 	unsigned int nents;
 };
@@ -663,6 +686,11 @@ static int build_test_sglist(struct test_sglist *tsgl,
 	sg_mark_end(&tsgl->sgl[tsgl->nents - 1]);
 	tsgl->sgl_ptr = tsgl->sgl;
 	memcpy(tsgl->sgl_saved, tsgl->sgl, tsgl->nents * sizeof(tsgl->sgl[0]));
+
+	sg_init_table(tsgl->full_sgl, XBUFSIZE);
+	for (i = 0; i < XBUFSIZE; i++)
+		sg_set_buf(tsgl->full_sgl, tsgl->bufs[i], PAGE_SIZE * 2);
+
 	return 0;
 }
 
@@ -1139,6 +1167,27 @@ static void generate_random_testvec_config(struct rnd_state *rng,
 		break;
 	}
 
+	if (prandom_bool(rng)) {
+		int i;
+
+		cfg->multibuffer = true;
+		cfg->multibuffer_count = prandom_u32_state(rng);
+		cfg->multibuffer_count %= MAX_MB_MSGS;
+		if (cfg->multibuffer_count++) {
+			cfg->multibuffer_index = prandom_u32_state(rng);
+			cfg->multibuffer_index %= cfg->multibuffer_count;
+		}
+
+		cfg->multibuffer_uneven = prandom_bool(rng);
+		for (i = 0; i < MAX_MB_MSGS; i++)
+			cfg->multibuffer_lens[i] =
+				generate_random_length(rng, PAGE_SIZE * 2 * XBUFSIZE);
+
+		p += scnprintf(p, end - p, " multibuffer(%d/%d%s)",
+			       cfg->multibuffer_index, cfg->multibuffer_count,
+			       cfg->multibuffer_uneven ? "/uneven" : "");
+	}
+
 	if (!(cfg->req_flags & CRYPTO_TFM_REQ_MAY_SLEEP)) {
 		if (prandom_bool(rng)) {
 			cfg->nosimd = true;
@@ -1443,6 +1492,7 @@ static int do_ahash_op(int (*op)(struct ahash_request *req),
 		       struct ahash_request *req,
 		       struct crypto_wait *wait, bool nosimd)
 {
+	struct ahash_request *r2;
 	int err;
 
 	if (nosimd)
@@ -1453,7 +1503,15 @@ static int do_ahash_op(int (*op)(struct ahash_request *req),
 	if (nosimd)
 		crypto_reenable_simd_for_test();
 
-	return crypto_wait_req(err, wait);
+	err = crypto_wait_req(err, wait);
+	if (err)
+		return err;
+
+	list_for_each_entry(r2, &req->base.list, base.list)
+		if (r2->base.err)
+			return r2->base.err;
+
+	return 0;
 }
 
 static int check_nonfinal_ahash_op(const char *op, int err,
@@ -1474,26 +1532,74 @@ static int check_nonfinal_ahash_op(const char *op, int err,
 	return 0;
 }
 
+static void setup_ahash_multibuffer(
+	struct ahash_request *reqs[MAX_MB_MSGS],
+	const struct testvec_config *cfg,
+	struct test_sglist *tsgl)
+{
+	struct scatterlist *sg = tsgl->full_sgl;
+	static u8 trash[HASH_MAX_DIGESTSIZE];
+	struct ahash_request *req = reqs[0];
+	unsigned int num_msgs;
+	unsigned int msg_idx;
+	int i;
+
+	if (!cfg->multibuffer)
+		return;
+
+	num_msgs = cfg->multibuffer_count;
+	if (num_msgs == 1)
+		return;
+
+	msg_idx = cfg->multibuffer_index;
+	for (i = 1; i < num_msgs; i++) {
+		struct ahash_request *r2 = reqs[i];
+		unsigned int nbytes = req->nbytes;
+
+		if (cfg->multibuffer_uneven)
+			nbytes = cfg->multibuffer_lens[i];
+
+		ahash_request_set_callback(r2, req->base.flags, NULL, NULL);
+		ahash_request_set_crypt(r2, sg, trash, nbytes);
+		ahash_request_chain(r2, req);
+	}
+
+	if (msg_idx) {
+		reqs[msg_idx]->src = req->src;
+		reqs[msg_idx]->nbytes = req->nbytes;
+		reqs[msg_idx]->result = req->result;
+		req->src = sg;
+		if (cfg->multibuffer_uneven)
+			req->nbytes = cfg->multibuffer_lens[0];
+		req->result = trash;
+	}
+}
+
 /* Test one hash test vector in one configuration, using the ahash API */
 static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 			      const char *vec_name,
 			      const struct testvec_config *cfg,
-			      struct ahash_request *req,
+			      struct ahash_request *reqs[MAX_MB_MSGS],
 			      struct test_sglist *tsgl,
 			      u8 *hashstate)
 {
+	struct ahash_request *req = reqs[0];
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	const unsigned int digestsize = crypto_ahash_digestsize(tfm);
 	const unsigned int statesize = crypto_ahash_statesize(tfm);
 	const char *driver = crypto_ahash_driver_name(tfm);
 	const u32 req_flags = CRYPTO_TFM_REQ_MAY_BACKLOG | cfg->req_flags;
 	const struct test_sg_division *divs[XBUFSIZE];
+	struct ahash_request *reqi = req;
 	DECLARE_CRYPTO_WAIT(wait);
 	unsigned int i;
 	struct scatterlist *pending_sgl;
 	unsigned int pending_len;
 	u8 result[HASH_MAX_DIGESTSIZE + TESTMGR_POISON_LEN];
 	int err;
+
+	if (cfg->multibuffer)
+		reqi = reqs[cfg->multibuffer_index];
 
 	/* Set the key, if specified */
 	if (vec->ksize) {
@@ -1524,7 +1630,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 
 	/* Do the actual hashing */
 
-	testmgr_poison(req->__ctx, crypto_ahash_reqsize(tfm));
+	testmgr_poison(reqi->__ctx, crypto_ahash_reqsize(tfm));
 	testmgr_poison(result, digestsize + TESTMGR_POISON_LEN);
 
 	if (cfg->finalization_type == FINALIZATION_TYPE_DIGEST ||
@@ -1533,6 +1639,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 		ahash_request_set_callback(req, req_flags, crypto_req_done,
 					   &wait);
 		ahash_request_set_crypt(req, tsgl->sgl, result, vec->psize);
+		setup_ahash_multibuffer(reqs, cfg, tsgl);
 		err = do_ahash_op(crypto_ahash_digest, req, &wait, cfg->nosimd);
 		if (err) {
 			if (err == vec->digest_error)
@@ -1554,6 +1661,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 
 	ahash_request_set_callback(req, req_flags, crypto_req_done, &wait);
 	ahash_request_set_crypt(req, NULL, result, 0);
+	setup_ahash_multibuffer(reqs, cfg, tsgl);
 	err = do_ahash_op(crypto_ahash_init, req, &wait, cfg->nosimd);
 	err = check_nonfinal_ahash_op("init", err, result, digestsize,
 				      driver, vec_name, cfg);
@@ -1570,6 +1678,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 						   crypto_req_done, &wait);
 			ahash_request_set_crypt(req, pending_sgl, result,
 						pending_len);
+			setup_ahash_multibuffer(reqs, cfg, tsgl);
 			err = do_ahash_op(crypto_ahash_update, req, &wait,
 					  divs[i]->nosimd);
 			err = check_nonfinal_ahash_op("update", err,
@@ -1584,7 +1693,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 			/* Test ->export() and ->import() */
 			testmgr_poison(hashstate + statesize,
 				       TESTMGR_POISON_LEN);
-			err = crypto_ahash_export(req, hashstate);
+			err = crypto_ahash_export(reqi, hashstate);
 			err = check_nonfinal_ahash_op("export", err,
 						      result, digestsize,
 						      driver, vec_name, cfg);
@@ -1597,8 +1706,8 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 				return -EOVERFLOW;
 			}
 
-			testmgr_poison(req->__ctx, crypto_ahash_reqsize(tfm));
-			err = crypto_ahash_import(req, hashstate);
+			testmgr_poison(reqi->__ctx, crypto_ahash_reqsize(tfm));
+			err = crypto_ahash_import(reqi, hashstate);
 			err = check_nonfinal_ahash_op("import", err,
 						      result, digestsize,
 						      driver, vec_name, cfg);
@@ -1612,6 +1721,7 @@ static int test_ahash_vec_cfg(const struct hash_testvec *vec,
 
 	ahash_request_set_callback(req, req_flags, crypto_req_done, &wait);
 	ahash_request_set_crypt(req, pending_sgl, result, pending_len);
+	setup_ahash_multibuffer(reqs, cfg, tsgl);
 	if (cfg->finalization_type == FINALIZATION_TYPE_FINAL) {
 		/* finish with update() and final() */
 		err = do_ahash_op(crypto_ahash_update, req, &wait, cfg->nosimd);
@@ -1643,7 +1753,7 @@ result_ready:
 static int test_hash_vec_cfg(const struct hash_testvec *vec,
 			     const char *vec_name,
 			     const struct testvec_config *cfg,
-			     struct ahash_request *req,
+			     struct ahash_request *reqs[MAX_MB_MSGS],
 			     struct shash_desc *desc,
 			     struct test_sglist *tsgl,
 			     u8 *hashstate)
@@ -1663,11 +1773,12 @@ static int test_hash_vec_cfg(const struct hash_testvec *vec,
 			return err;
 	}
 
-	return test_ahash_vec_cfg(vec, vec_name, cfg, req, tsgl, hashstate);
+	return test_ahash_vec_cfg(vec, vec_name, cfg, reqs, tsgl, hashstate);
 }
 
 static int test_hash_vec(const struct hash_testvec *vec, unsigned int vec_num,
-			 struct ahash_request *req, struct shash_desc *desc,
+			 struct ahash_request *reqs[MAX_MB_MSGS],
+			 struct shash_desc *desc,
 			 struct test_sglist *tsgl, u8 *hashstate)
 {
 	char vec_name[16];
@@ -1679,7 +1790,7 @@ static int test_hash_vec(const struct hash_testvec *vec, unsigned int vec_num,
 	for (i = 0; i < ARRAY_SIZE(default_hash_testvec_configs); i++) {
 		err = test_hash_vec_cfg(vec, vec_name,
 					&default_hash_testvec_configs[i],
-					req, desc, tsgl, hashstate);
+					reqs, desc, tsgl, hashstate);
 		if (err)
 			return err;
 	}
@@ -1696,7 +1807,7 @@ static int test_hash_vec(const struct hash_testvec *vec, unsigned int vec_num,
 			generate_random_testvec_config(&rng, &cfg, cfgname,
 						       sizeof(cfgname));
 			err = test_hash_vec_cfg(vec, vec_name, &cfg,
-						req, desc, tsgl, hashstate);
+						reqs, desc, tsgl, hashstate);
 			if (err)
 				return err;
 			cond_resched();
@@ -1755,11 +1866,12 @@ done:
  */
 static int test_hash_vs_generic_impl(const char *generic_driver,
 				     unsigned int maxkeysize,
-				     struct ahash_request *req,
+				     struct ahash_request *reqs[MAX_MB_MSGS],
 				     struct shash_desc *desc,
 				     struct test_sglist *tsgl,
 				     u8 *hashstate)
 {
+	struct ahash_request *req = reqs[0];
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
 	const unsigned int digestsize = crypto_ahash_digestsize(tfm);
 	const unsigned int blocksize = crypto_ahash_blocksize(tfm);
@@ -1857,7 +1969,7 @@ static int test_hash_vs_generic_impl(const char *generic_driver,
 					       sizeof(cfgname));
 
 		err = test_hash_vec_cfg(&vec, vec_name, cfg,
-					req, desc, tsgl, hashstate);
+					reqs, desc, tsgl, hashstate);
 		if (err)
 			goto out;
 		cond_resched();
@@ -1875,7 +1987,7 @@ out:
 #else /* !CONFIG_CRYPTO_MANAGER_EXTRA_TESTS */
 static int test_hash_vs_generic_impl(const char *generic_driver,
 				     unsigned int maxkeysize,
-				     struct ahash_request *req,
+				     struct ahash_request *reqs[MAX_MB_MSGS],
 				     struct shash_desc *desc,
 				     struct test_sglist *tsgl,
 				     u8 *hashstate)
@@ -1922,8 +2034,8 @@ static int __alg_test_hash(const struct hash_testvec *vecs,
 			   u32 type, u32 mask,
 			   const char *generic_driver, unsigned int maxkeysize)
 {
+	struct ahash_request *reqs[MAX_MB_MSGS] = {};
 	struct crypto_ahash *atfm = NULL;
-	struct ahash_request *req = NULL;
 	struct crypto_shash *stfm = NULL;
 	struct shash_desc *desc = NULL;
 	struct test_sglist *tsgl = NULL;
@@ -1940,19 +2052,21 @@ static int __alg_test_hash(const struct hash_testvec *vecs,
 	atfm = crypto_alloc_ahash(driver, type, mask);
 	if (IS_ERR(atfm)) {
 		if (PTR_ERR(atfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		pr_err("alg: hash: failed to allocate transform for %s: %ld\n",
 		       driver, PTR_ERR(atfm));
 		return PTR_ERR(atfm);
 	}
 	driver = crypto_ahash_driver_name(atfm);
 
-	req = ahash_request_alloc(atfm, GFP_KERNEL);
-	if (!req) {
-		pr_err("alg: hash: failed to allocate request for %s\n",
-		       driver);
-		err = -ENOMEM;
-		goto out;
+	for (i = 0; i < MAX_MB_MSGS; i++) {
+		reqs[i] = ahash_request_alloc(atfm, GFP_KERNEL);
+		if (!reqs[i]) {
+			pr_err("alg: hash: failed to allocate request for %s\n",
+			       driver);
+			err = -ENOMEM;
+			goto out;
+		}
 	}
 
 	/*
@@ -1988,12 +2102,12 @@ static int __alg_test_hash(const struct hash_testvec *vecs,
 		if (fips_enabled && vecs[i].fips_skip)
 			continue;
 
-		err = test_hash_vec(&vecs[i], i, req, desc, tsgl, hashstate);
+		err = test_hash_vec(&vecs[i], i, reqs, desc, tsgl, hashstate);
 		if (err)
 			goto out;
 		cond_resched();
 	}
-	err = test_hash_vs_generic_impl(generic_driver, maxkeysize, req,
+	err = test_hash_vs_generic_impl(generic_driver, maxkeysize, reqs,
 					desc, tsgl, hashstate);
 out:
 	kfree(hashstate);
@@ -2003,7 +2117,12 @@ out:
 	}
 	kfree(desc);
 	crypto_free_shash(stfm);
-	ahash_request_free(req);
+	if (reqs[0]) {
+		ahash_request_set_callback(reqs[0], 0, NULL, NULL);
+		for (i = 1; i < MAX_MB_MSGS && reqs[i]; i++)
+			ahash_request_chain(reqs[i], reqs[0]);
+		ahash_request_free(reqs[0]);
+	}
 	crypto_free_ahash(atfm);
 	return err;
 }
@@ -2706,7 +2825,7 @@ static int alg_test_aead(const struct alg_test_desc *desc, const char *driver,
 	tfm = crypto_alloc_aead(driver, type, mask);
 	if (IS_ERR(tfm)) {
 		if (PTR_ERR(tfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		pr_err("alg: aead: failed to allocate transform for %s: %ld\n",
 		       driver, PTR_ERR(tfm));
 		return PTR_ERR(tfm);
@@ -2878,18 +2997,11 @@ static int test_skcipher_vec_cfg(int enc, const struct cipher_testvec *vec,
 	if (ivsize) {
 		if (WARN_ON(ivsize > MAX_IVLEN))
 			return -EINVAL;
-		if (vec->generates_iv && !enc)
-			memcpy(iv, vec->iv_out, ivsize);
-		else if (vec->iv)
+		if (vec->iv)
 			memcpy(iv, vec->iv, ivsize);
 		else
 			memset(iv, 0, ivsize);
 	} else {
-		if (vec->generates_iv) {
-			pr_err("alg: skcipher: %s has ivsize=0 but test vector %s generates IV!\n",
-			       driver, vec_name);
-			return -EINVAL;
-		}
 		iv = NULL;
 	}
 
@@ -3126,10 +3238,6 @@ static int test_skcipher_vs_generic_impl(const char *generic_driver,
 	if (noextratests)
 		return 0;
 
-	/* Keywrap isn't supported here yet as it handles its IV differently. */
-	if (strncmp(algname, "kw(", 3) == 0)
-		return 0;
-
 	init_rnd_state(&rng);
 
 	if (!generic_driver) { /* Use default naming convention? */
@@ -3285,7 +3393,7 @@ static int alg_test_skcipher(const struct alg_test_desc *desc,
 	tfm = crypto_alloc_skcipher(driver, type, mask);
 	if (IS_ERR(tfm)) {
 		if (PTR_ERR(tfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		pr_err("alg: skcipher: failed to allocate transform for %s: %ld\n",
 		       driver, PTR_ERR(tfm));
 		return PTR_ERR(tfm);
@@ -3324,139 +3432,54 @@ out:
 	return err;
 }
 
-static int test_comp(struct crypto_comp *tfm,
-		     const struct comp_testvec *ctemplate,
-		     const struct comp_testvec *dtemplate,
-		     int ctcount, int dtcount)
-{
-	const char *algo = crypto_tfm_alg_driver_name(crypto_comp_tfm(tfm));
-	char *output, *decomp_output;
-	unsigned int i;
-	int ret;
-
-	output = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
-	if (!output)
-		return -ENOMEM;
-
-	decomp_output = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
-	if (!decomp_output) {
-		kfree(output);
-		return -ENOMEM;
-	}
-
-	for (i = 0; i < ctcount; i++) {
-		int ilen;
-		unsigned int dlen = COMP_BUF_SIZE;
-
-		memset(output, 0, COMP_BUF_SIZE);
-		memset(decomp_output, 0, COMP_BUF_SIZE);
-
-		ilen = ctemplate[i].inlen;
-		ret = crypto_comp_compress(tfm, ctemplate[i].input,
-					   ilen, output, &dlen);
-		if (ret) {
-			printk(KERN_ERR "alg: comp: compression failed "
-			       "on test %d for %s: ret=%d\n", i + 1, algo,
-			       -ret);
-			goto out;
-		}
-
-		ilen = dlen;
-		dlen = COMP_BUF_SIZE;
-		ret = crypto_comp_decompress(tfm, output,
-					     ilen, decomp_output, &dlen);
-		if (ret) {
-			pr_err("alg: comp: compression failed: decompress: on test %d for %s failed: ret=%d\n",
-			       i + 1, algo, -ret);
-			goto out;
-		}
-
-		if (dlen != ctemplate[i].inlen) {
-			printk(KERN_ERR "alg: comp: Compression test %d "
-			       "failed for %s: output len = %d\n", i + 1, algo,
-			       dlen);
-			ret = -EINVAL;
-			goto out;
-		}
-
-		if (memcmp(decomp_output, ctemplate[i].input,
-			   ctemplate[i].inlen)) {
-			pr_err("alg: comp: compression failed: output differs: on test %d for %s\n",
-			       i + 1, algo);
-			hexdump(decomp_output, dlen);
-			ret = -EINVAL;
-			goto out;
-		}
-	}
-
-	for (i = 0; i < dtcount; i++) {
-		int ilen;
-		unsigned int dlen = COMP_BUF_SIZE;
-
-		memset(decomp_output, 0, COMP_BUF_SIZE);
-
-		ilen = dtemplate[i].inlen;
-		ret = crypto_comp_decompress(tfm, dtemplate[i].input,
-					     ilen, decomp_output, &dlen);
-		if (ret) {
-			printk(KERN_ERR "alg: comp: decompression failed "
-			       "on test %d for %s: ret=%d\n", i + 1, algo,
-			       -ret);
-			goto out;
-		}
-
-		if (dlen != dtemplate[i].outlen) {
-			printk(KERN_ERR "alg: comp: Decompression test %d "
-			       "failed for %s: output len = %d\n", i + 1, algo,
-			       dlen);
-			ret = -EINVAL;
-			goto out;
-		}
-
-		if (memcmp(decomp_output, dtemplate[i].output, dlen)) {
-			printk(KERN_ERR "alg: comp: Decompression test %d "
-			       "failed for %s\n", i + 1, algo);
-			hexdump(decomp_output, dlen);
-			ret = -EINVAL;
-			goto out;
-		}
-	}
-
-	ret = 0;
-
-out:
-	kfree(decomp_output);
-	kfree(output);
-	return ret;
-}
-
 static int test_acomp(struct crypto_acomp *tfm,
 		      const struct comp_testvec *ctemplate,
 		      const struct comp_testvec *dtemplate,
 		      int ctcount, int dtcount)
 {
 	const char *algo = crypto_tfm_alg_driver_name(crypto_acomp_tfm(tfm));
-	unsigned int i;
-	char *output, *decomp_out;
-	int ret;
-	struct scatterlist src, dst;
-	struct acomp_req *req;
+	struct scatterlist *src = NULL, *dst = NULL;
+	struct acomp_req *reqs[MAX_MB_MSGS] = {};
+	char *decomp_out[MAX_MB_MSGS] = {};
+	char *output[MAX_MB_MSGS] = {};
 	struct crypto_wait wait;
+	struct acomp_req *req;
+	int ret = -ENOMEM;
+	unsigned int i;
 
-	output = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
-	if (!output)
-		return -ENOMEM;
+	src = kmalloc_array(MAX_MB_MSGS, sizeof(*src), GFP_KERNEL);
+	if (!src)
+		goto out;
+	dst = kmalloc_array(MAX_MB_MSGS, sizeof(*dst), GFP_KERNEL);
+	if (!dst)
+		goto out;
 
-	decomp_out = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
-	if (!decomp_out) {
-		kfree(output);
-		return -ENOMEM;
+	for (i = 0; i < MAX_MB_MSGS; i++) {
+		reqs[i] = acomp_request_alloc(tfm);
+		if (!reqs[i])
+			goto out;
+
+		acomp_request_set_callback(reqs[i],
+					   CRYPTO_TFM_REQ_MAY_SLEEP |
+					   CRYPTO_TFM_REQ_MAY_BACKLOG,
+					   crypto_req_done, &wait);
+		if (i)
+			acomp_request_chain(reqs[i], reqs[0]);
+
+		output[i] = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
+		if (!output[i])
+			goto out;
+
+		decomp_out[i] = kmalloc(COMP_BUF_SIZE, GFP_KERNEL);
+		if (!decomp_out[i])
+			goto out;
 	}
 
 	for (i = 0; i < ctcount; i++) {
 		unsigned int dlen = COMP_BUF_SIZE;
 		int ilen = ctemplate[i].inlen;
 		void *input_vec;
+		int j;
 
 		input_vec = kmemdup(ctemplate[i].input, ilen, GFP_KERNEL);
 		if (!input_vec) {
@@ -3464,85 +3487,61 @@ static int test_acomp(struct crypto_acomp *tfm,
 			goto out;
 		}
 
-		memset(output, 0, dlen);
 		crypto_init_wait(&wait);
-		sg_init_one(&src, input_vec, ilen);
-		sg_init_one(&dst, output, dlen);
+		sg_init_one(src, input_vec, ilen);
 
-		req = acomp_request_alloc(tfm);
-		if (!req) {
-			pr_err("alg: acomp: request alloc failed for %s\n",
-			       algo);
-			kfree(input_vec);
-			ret = -ENOMEM;
-			goto out;
+		for (j = 0; j < MAX_MB_MSGS; j++) {
+			sg_init_one(dst + j, output[j], dlen);
+			acomp_request_set_params(reqs[j], src, dst + j, ilen, dlen);
 		}
 
-		acomp_request_set_params(req, &src, &dst, ilen, dlen);
-		acomp_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
-					   crypto_req_done, &wait);
-
+		req = reqs[0];
 		ret = crypto_wait_req(crypto_acomp_compress(req), &wait);
 		if (ret) {
 			pr_err("alg: acomp: compression failed on test %d for %s: ret=%d\n",
 			       i + 1, algo, -ret);
 			kfree(input_vec);
-			acomp_request_free(req);
 			goto out;
 		}
 
 		ilen = req->dlen;
 		dlen = COMP_BUF_SIZE;
-		sg_init_one(&src, output, ilen);
-		sg_init_one(&dst, decomp_out, dlen);
 		crypto_init_wait(&wait);
-		acomp_request_set_params(req, &src, &dst, ilen, dlen);
-
-		ret = crypto_wait_req(crypto_acomp_decompress(req), &wait);
-		if (ret) {
-			pr_err("alg: acomp: compression failed on test %d for %s: ret=%d\n",
-			       i + 1, algo, -ret);
-			kfree(input_vec);
-			acomp_request_free(req);
-			goto out;
+		for (j = 0; j < MAX_MB_MSGS; j++) {
+			sg_init_one(src + j, output[j], ilen);
+			sg_init_one(dst + j, decomp_out[j], dlen);
+			acomp_request_set_params(reqs[j], src + j, dst + j, ilen, dlen);
 		}
 
-		if (req->dlen != ctemplate[i].inlen) {
-			pr_err("alg: acomp: Compression test %d failed for %s: output len = %d\n",
-			       i + 1, algo, req->dlen);
-			ret = -EINVAL;
-			kfree(input_vec);
-			acomp_request_free(req);
-			goto out;
-		}
+		crypto_wait_req(crypto_acomp_decompress(req), &wait);
+		for (j = 0; j < MAX_MB_MSGS; j++) {
+			ret = reqs[j]->base.err;
+			if (ret) {
+				pr_err("alg: acomp: compression failed on test %d (%d) for %s: ret=%d\n",
+				       i + 1, j, algo, -ret);
+				kfree(input_vec);
+				goto out;
+			}
 
-		if (memcmp(input_vec, decomp_out, req->dlen)) {
-			pr_err("alg: acomp: Compression test %d failed for %s\n",
-			       i + 1, algo);
-			hexdump(output, req->dlen);
-			ret = -EINVAL;
-			kfree(input_vec);
-			acomp_request_free(req);
-			goto out;
-		}
+			if (reqs[j]->dlen != ctemplate[i].inlen) {
+				pr_err("alg: acomp: Compression test %d (%d) failed for %s: output len = %d\n",
+				       i + 1, j, algo, reqs[j]->dlen);
+				ret = -EINVAL;
+				kfree(input_vec);
+				goto out;
+			}
 
-#ifdef CONFIG_CRYPTO_MANAGER_EXTRA_TESTS
-		crypto_init_wait(&wait);
-		sg_init_one(&src, input_vec, ilen);
-		acomp_request_set_params(req, &src, NULL, ilen, 0);
-
-		ret = crypto_wait_req(crypto_acomp_compress(req), &wait);
-		if (ret) {
-			pr_err("alg: acomp: compression failed on NULL dst buffer test %d for %s: ret=%d\n",
-			       i + 1, algo, -ret);
-			kfree(input_vec);
-			acomp_request_free(req);
-			goto out;
+			if (memcmp(input_vec, decomp_out[j], reqs[j]->dlen)) {
+				pr_err("alg: acomp: Compression test %d (%d) failed for %s\n",
+				       i + 1, j, algo);
+				hexdump(output[j], reqs[j]->dlen);
+				ret = -EINVAL;
+				kfree(input_vec);
+				goto out;
+			}
 		}
-#endif
 
 		kfree(input_vec);
-		acomp_request_free(req);
 	}
 
 	for (i = 0; i < dtcount; i++) {
@@ -3556,10 +3555,9 @@ static int test_acomp(struct crypto_acomp *tfm,
 			goto out;
 		}
 
-		memset(output, 0, dlen);
 		crypto_init_wait(&wait);
-		sg_init_one(&src, input_vec, ilen);
-		sg_init_one(&dst, output, dlen);
+		sg_init_one(src, input_vec, ilen);
+		sg_init_one(dst, output[0], dlen);
 
 		req = acomp_request_alloc(tfm);
 		if (!req) {
@@ -3570,7 +3568,7 @@ static int test_acomp(struct crypto_acomp *tfm,
 			goto out;
 		}
 
-		acomp_request_set_params(req, &src, &dst, ilen, dlen);
+		acomp_request_set_params(req, src, dst, ilen, dlen);
 		acomp_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
 					   crypto_req_done, &wait);
 
@@ -3592,29 +3590,15 @@ static int test_acomp(struct crypto_acomp *tfm,
 			goto out;
 		}
 
-		if (memcmp(output, dtemplate[i].output, req->dlen)) {
+		if (memcmp(output[0], dtemplate[i].output, req->dlen)) {
 			pr_err("alg: acomp: Decompression test %d failed for %s\n",
 			       i + 1, algo);
-			hexdump(output, req->dlen);
+			hexdump(output[0], req->dlen);
 			ret = -EINVAL;
 			kfree(input_vec);
 			acomp_request_free(req);
 			goto out;
 		}
-
-#ifdef CONFIG_CRYPTO_MANAGER_EXTRA_TESTS
-		crypto_init_wait(&wait);
-		acomp_request_set_params(req, &src, NULL, ilen, 0);
-
-		ret = crypto_wait_req(crypto_acomp_decompress(req), &wait);
-		if (ret) {
-			pr_err("alg: acomp: decompression failed on NULL dst buffer test %d for %s: ret=%d\n",
-			       i + 1, algo, -ret);
-			kfree(input_vec);
-			acomp_request_free(req);
-			goto out;
-		}
-#endif
 
 		kfree(input_vec);
 		acomp_request_free(req);
@@ -3623,8 +3607,13 @@ static int test_acomp(struct crypto_acomp *tfm,
 	ret = 0;
 
 out:
-	kfree(decomp_out);
-	kfree(output);
+	acomp_request_free(reqs[0]);
+	for (i = 0; i < MAX_MB_MSGS; i++) {
+		kfree(output[i]);
+		kfree(decomp_out[i]);
+	}
+	kfree(dst);
+	kfree(src);
 	return ret;
 }
 
@@ -3700,7 +3689,7 @@ static int alg_test_cipher(const struct alg_test_desc *desc,
 	tfm = crypto_alloc_cipher(driver, type, mask);
 	if (IS_ERR(tfm)) {
 		if (PTR_ERR(tfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		printk(KERN_ERR "alg: cipher: Failed to load transform for "
 		       "%s: %ld\n", driver, PTR_ERR(tfm));
 		return PTR_ERR(tfm);
@@ -3717,42 +3706,22 @@ static int alg_test_cipher(const struct alg_test_desc *desc,
 static int alg_test_comp(const struct alg_test_desc *desc, const char *driver,
 			 u32 type, u32 mask)
 {
-	struct crypto_comp *comp;
 	struct crypto_acomp *acomp;
 	int err;
-	u32 algo_type = type & CRYPTO_ALG_TYPE_ACOMPRESS_MASK;
 
-	if (algo_type == CRYPTO_ALG_TYPE_ACOMPRESS) {
-		acomp = crypto_alloc_acomp(driver, type, mask);
-		if (IS_ERR(acomp)) {
-			if (PTR_ERR(acomp) == -ENOENT)
-				return -ENOENT;
-			pr_err("alg: acomp: Failed to load transform for %s: %ld\n",
-			       driver, PTR_ERR(acomp));
-			return PTR_ERR(acomp);
-		}
-		err = test_acomp(acomp, desc->suite.comp.comp.vecs,
-				 desc->suite.comp.decomp.vecs,
-				 desc->suite.comp.comp.count,
-				 desc->suite.comp.decomp.count);
-		crypto_free_acomp(acomp);
-	} else {
-		comp = crypto_alloc_comp(driver, type, mask);
-		if (IS_ERR(comp)) {
-			if (PTR_ERR(comp) == -ENOENT)
-				return -ENOENT;
-			pr_err("alg: comp: Failed to load transform for %s: %ld\n",
-			       driver, PTR_ERR(comp));
-			return PTR_ERR(comp);
-		}
-
-		err = test_comp(comp, desc->suite.comp.comp.vecs,
-				desc->suite.comp.decomp.vecs,
-				desc->suite.comp.comp.count,
-				desc->suite.comp.decomp.count);
-
-		crypto_free_comp(comp);
+	acomp = crypto_alloc_acomp(driver, type, mask);
+	if (IS_ERR(acomp)) {
+		if (PTR_ERR(acomp) == -ENOENT)
+			return 0;
+		pr_err("alg: acomp: Failed to load transform for %s: %ld\n",
+		       driver, PTR_ERR(acomp));
+		return PTR_ERR(acomp);
 	}
+	err = test_acomp(acomp, desc->suite.comp.comp.vecs,
+			 desc->suite.comp.decomp.vecs,
+			 desc->suite.comp.comp.count,
+			 desc->suite.comp.decomp.count);
+	crypto_free_acomp(acomp);
 	return err;
 }
 
@@ -3818,7 +3787,7 @@ static int alg_test_cprng(const struct alg_test_desc *desc, const char *driver,
 	rng = crypto_alloc_rng(driver, type, mask);
 	if (IS_ERR(rng)) {
 		if (PTR_ERR(rng) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		printk(KERN_ERR "alg: cprng: Failed to load transform for %s: "
 		       "%ld\n", driver, PTR_ERR(rng));
 		return PTR_ERR(rng);
@@ -3846,12 +3815,11 @@ static int drbg_cavs_test(const struct drbg_testvec *test, int pr,
 
 	drng = crypto_alloc_rng(driver, type, mask);
 	if (IS_ERR(drng)) {
+		kfree_sensitive(buf);
 		if (PTR_ERR(drng) == -ENOENT)
-			goto out_no_rng;
+			return 0;
 		printk(KERN_ERR "alg: drbg: could not allocate DRNG handle for "
 		       "%s\n", driver);
-out_no_rng:
-		kfree_sensitive(buf);
 		return PTR_ERR(drng);
 	}
 
@@ -4095,7 +4063,7 @@ static int alg_test_kpp(const struct alg_test_desc *desc, const char *driver,
 	tfm = crypto_alloc_kpp(driver, type, mask);
 	if (IS_ERR(tfm)) {
 		if (PTR_ERR(tfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		pr_err("alg: kpp: Failed to load tfm for %s: %ld\n",
 		       driver, PTR_ERR(tfm));
 		return PTR_ERR(tfm);
@@ -4124,11 +4092,9 @@ static int test_akcipher_one(struct crypto_akcipher *tfm,
 	struct crypto_wait wait;
 	unsigned int out_len_max, out_len = 0;
 	int err = -ENOMEM;
-	struct scatterlist src, dst, src_tab[3];
-	const char *m, *c;
-	unsigned int m_size, c_size;
-	const char *op;
-	u8 *key, *ptr;
+	struct scatterlist src, dst, src_tab[2];
+	const char *c;
+	unsigned int c_size;
 
 	if (testmgr_alloc_buf(xbuf))
 		return err;
@@ -4139,92 +4105,53 @@ static int test_akcipher_one(struct crypto_akcipher *tfm,
 
 	crypto_init_wait(&wait);
 
-	key = kmalloc(vecs->key_len + sizeof(u32) * 2 + vecs->param_len,
-		      GFP_KERNEL);
-	if (!key)
-		goto free_req;
-	memcpy(key, vecs->key, vecs->key_len);
-	ptr = key + vecs->key_len;
-	ptr = test_pack_u32(ptr, vecs->algo);
-	ptr = test_pack_u32(ptr, vecs->param_len);
-	memcpy(ptr, vecs->params, vecs->param_len);
-
 	if (vecs->public_key_vec)
-		err = crypto_akcipher_set_pub_key(tfm, key, vecs->key_len);
+		err = crypto_akcipher_set_pub_key(tfm, vecs->key,
+						  vecs->key_len);
 	else
-		err = crypto_akcipher_set_priv_key(tfm, key, vecs->key_len);
+		err = crypto_akcipher_set_priv_key(tfm, vecs->key,
+						   vecs->key_len);
 	if (err)
-		goto free_key;
+		goto free_req;
 
-	/*
-	 * First run test which do not require a private key, such as
-	 * encrypt or verify.
-	 */
+	/* First run encrypt test which does not require a private key */
 	err = -ENOMEM;
 	out_len_max = crypto_akcipher_maxsize(tfm);
 	outbuf_enc = kzalloc(out_len_max, GFP_KERNEL);
 	if (!outbuf_enc)
-		goto free_key;
+		goto free_req;
 
-	if (!vecs->siggen_sigver_test) {
-		m = vecs->m;
-		m_size = vecs->m_size;
-		c = vecs->c;
-		c_size = vecs->c_size;
-		op = "encrypt";
-	} else {
-		/* Swap args so we could keep plaintext (digest)
-		 * in vecs->m, and cooked signature in vecs->c.
-		 */
-		m = vecs->c; /* signature */
-		m_size = vecs->c_size;
-		c = vecs->m; /* digest */
-		c_size = vecs->m_size;
-		op = "verify";
-	}
+	c = vecs->c;
+	c_size = vecs->c_size;
 
 	err = -E2BIG;
-	if (WARN_ON(m_size > PAGE_SIZE))
+	if (WARN_ON(vecs->m_size > PAGE_SIZE))
 		goto free_all;
-	memcpy(xbuf[0], m, m_size);
+	memcpy(xbuf[0], vecs->m, vecs->m_size);
 
-	sg_init_table(src_tab, 3);
+	sg_init_table(src_tab, 2);
 	sg_set_buf(&src_tab[0], xbuf[0], 8);
-	sg_set_buf(&src_tab[1], xbuf[0] + 8, m_size - 8);
-	if (vecs->siggen_sigver_test) {
-		if (WARN_ON(c_size > PAGE_SIZE))
-			goto free_all;
-		memcpy(xbuf[1], c, c_size);
-		sg_set_buf(&src_tab[2], xbuf[1], c_size);
-		akcipher_request_set_crypt(req, src_tab, NULL, m_size, c_size);
-	} else {
-		sg_init_one(&dst, outbuf_enc, out_len_max);
-		akcipher_request_set_crypt(req, src_tab, &dst, m_size,
-					   out_len_max);
-	}
+	sg_set_buf(&src_tab[1], xbuf[0] + 8, vecs->m_size - 8);
+	sg_init_one(&dst, outbuf_enc, out_len_max);
+	akcipher_request_set_crypt(req, src_tab, &dst, vecs->m_size,
+				   out_len_max);
 	akcipher_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
 				      crypto_req_done, &wait);
 
-	err = crypto_wait_req(vecs->siggen_sigver_test ?
-			      /* Run asymmetric signature verification */
-			      crypto_akcipher_verify(req) :
-			      /* Run asymmetric encrypt */
-			      crypto_akcipher_encrypt(req), &wait);
+	err = crypto_wait_req(crypto_akcipher_encrypt(req), &wait);
 	if (err) {
-		pr_err("alg: akcipher: %s test failed. err %d\n", op, err);
+		pr_err("alg: akcipher: encrypt test failed. err %d\n", err);
 		goto free_all;
 	}
-	if (!vecs->siggen_sigver_test && c) {
+	if (c) {
 		if (req->dst_len != c_size) {
-			pr_err("alg: akcipher: %s test failed. Invalid output len\n",
-			       op);
+			pr_err("alg: akcipher: encrypt test failed. Invalid output len\n");
 			err = -EINVAL;
 			goto free_all;
 		}
 		/* verify that encrypted message is equal to expected */
 		if (memcmp(c, outbuf_enc, c_size) != 0) {
-			pr_err("alg: akcipher: %s test failed. Invalid output\n",
-			       op);
+			pr_err("alg: akcipher: encrypt test failed. Invalid output\n");
 			hexdump(outbuf_enc, c_size);
 			err = -EINVAL;
 			goto free_all;
@@ -4232,7 +4159,7 @@ static int test_akcipher_one(struct crypto_akcipher *tfm,
 	}
 
 	/*
-	 * Don't invoke (decrypt or sign) test which require a private key
+	 * Don't invoke decrypt test which requires a private key
 	 * for vectors with only a public key.
 	 */
 	if (vecs->public_key_vec) {
@@ -4245,13 +4172,12 @@ static int test_akcipher_one(struct crypto_akcipher *tfm,
 		goto free_all;
 	}
 
-	if (!vecs->siggen_sigver_test && !c) {
+	if (!c) {
 		c = outbuf_enc;
 		c_size = req->dst_len;
 	}
 
 	err = -E2BIG;
-	op = vecs->siggen_sigver_test ? "sign" : "decrypt";
 	if (WARN_ON(c_size > PAGE_SIZE))
 		goto free_all;
 	memcpy(xbuf[0], c, c_size);
@@ -4261,34 +4187,29 @@ static int test_akcipher_one(struct crypto_akcipher *tfm,
 	crypto_init_wait(&wait);
 	akcipher_request_set_crypt(req, &src, &dst, c_size, out_len_max);
 
-	err = crypto_wait_req(vecs->siggen_sigver_test ?
-			      /* Run asymmetric signature generation */
-			      crypto_akcipher_sign(req) :
-			      /* Run asymmetric decrypt */
-			      crypto_akcipher_decrypt(req), &wait);
+	err = crypto_wait_req(crypto_akcipher_decrypt(req), &wait);
 	if (err) {
-		pr_err("alg: akcipher: %s test failed. err %d\n", op, err);
+		pr_err("alg: akcipher: decrypt test failed. err %d\n", err);
 		goto free_all;
 	}
 	out_len = req->dst_len;
-	if (out_len < m_size) {
-		pr_err("alg: akcipher: %s test failed. Invalid output len %u\n",
-		       op, out_len);
+	if (out_len < vecs->m_size) {
+		pr_err("alg: akcipher: decrypt test failed. Invalid output len %u\n",
+		       out_len);
 		err = -EINVAL;
 		goto free_all;
 	}
 	/* verify that decrypted message is equal to the original msg */
-	if (memchr_inv(outbuf_dec, 0, out_len - m_size) ||
-	    memcmp(m, outbuf_dec + out_len - m_size, m_size)) {
-		pr_err("alg: akcipher: %s test failed. Invalid output\n", op);
+	if (memchr_inv(outbuf_dec, 0, out_len - vecs->m_size) ||
+	    memcmp(vecs->m, outbuf_dec + out_len - vecs->m_size,
+		   vecs->m_size)) {
+		pr_err("alg: akcipher: decrypt test failed. Invalid output\n");
 		hexdump(outbuf_dec, out_len);
 		err = -EINVAL;
 	}
 free_all:
 	kfree(outbuf_dec);
 	kfree(outbuf_enc);
-free_key:
-	kfree(key);
 free_req:
 	akcipher_request_free(req);
 free_xbuf:
@@ -4325,7 +4246,7 @@ static int alg_test_akcipher(const struct alg_test_desc *desc,
 	tfm = crypto_alloc_akcipher(driver, type, mask);
 	if (IS_ERR(tfm)) {
 		if (PTR_ERR(tfm) == -ENOENT)
-			return -ENOENT;
+			return 0;
 		pr_err("alg: akcipher: Failed to load tfm for %s: %ld\n",
 		       driver, PTR_ERR(tfm));
 		return PTR_ERR(tfm);
@@ -4335,6 +4256,114 @@ static int alg_test_akcipher(const struct alg_test_desc *desc,
 				    desc->suite.akcipher.count);
 
 	crypto_free_akcipher(tfm);
+	return err;
+}
+
+static int test_sig_one(struct crypto_sig *tfm, const struct sig_testvec *vecs)
+{
+	u8 *ptr, *key __free(kfree);
+	int err, sig_size;
+
+	key = kmalloc(vecs->key_len + 2 * sizeof(u32) + vecs->param_len,
+		      GFP_KERNEL);
+	if (!key)
+		return -ENOMEM;
+
+	/* ecrdsa expects additional parameters appended to the key */
+	memcpy(key, vecs->key, vecs->key_len);
+	ptr = key + vecs->key_len;
+	ptr = test_pack_u32(ptr, vecs->algo);
+	ptr = test_pack_u32(ptr, vecs->param_len);
+	memcpy(ptr, vecs->params, vecs->param_len);
+
+	if (vecs->public_key_vec)
+		err = crypto_sig_set_pubkey(tfm, key, vecs->key_len);
+	else
+		err = crypto_sig_set_privkey(tfm, key, vecs->key_len);
+	if (err)
+		return err;
+
+	/*
+	 * Run asymmetric signature verification first
+	 * (which does not require a private key)
+	 */
+	err = crypto_sig_verify(tfm, vecs->c, vecs->c_size,
+				vecs->m, vecs->m_size);
+	if (err) {
+		pr_err("alg: sig: verify test failed: err %d\n", err);
+		return err;
+	}
+
+	/*
+	 * Don't invoke sign test (which requires a private key)
+	 * for vectors with only a public key.
+	 */
+	if (vecs->public_key_vec)
+		return 0;
+
+	sig_size = crypto_sig_maxsize(tfm);
+	if (sig_size < vecs->c_size) {
+		pr_err("alg: sig: invalid maxsize %u\n", sig_size);
+		return -EINVAL;
+	}
+
+	u8 *sig __free(kfree) = kzalloc(sig_size, GFP_KERNEL);
+	if (!sig)
+		return -ENOMEM;
+
+	/* Run asymmetric signature generation */
+	err = crypto_sig_sign(tfm, vecs->m, vecs->m_size, sig, sig_size);
+	if (err < 0) {
+		pr_err("alg: sig: sign test failed: err %d\n", err);
+		return err;
+	}
+
+	/* Verify that generated signature equals cooked signature */
+	if (err != vecs->c_size ||
+	    memcmp(sig, vecs->c, vecs->c_size) ||
+	    memchr_inv(sig + vecs->c_size, 0, sig_size - vecs->c_size)) {
+		pr_err("alg: sig: sign test failed: invalid output\n");
+		hexdump(sig, sig_size);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int test_sig(struct crypto_sig *tfm, const char *alg,
+		    const struct sig_testvec *vecs, unsigned int tcount)
+{
+	const char *algo = crypto_tfm_alg_driver_name(crypto_sig_tfm(tfm));
+	int ret, i;
+
+	for (i = 0; i < tcount; i++) {
+		ret = test_sig_one(tfm, vecs++);
+		if (ret) {
+			pr_err("alg: sig: test %d failed for %s: err %d\n",
+			       i + 1, algo, ret);
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static int alg_test_sig(const struct alg_test_desc *desc, const char *driver,
+			u32 type, u32 mask)
+{
+	struct crypto_sig *tfm;
+	int err = 0;
+
+	tfm = crypto_alloc_sig(driver, type, mask);
+	if (IS_ERR(tfm)) {
+		pr_err("alg: sig: Failed to load tfm for %s: %ld\n",
+		       driver, PTR_ERR(tfm));
+		return PTR_ERR(tfm);
+	}
+	if (desc->suite.sig.vecs)
+		err = test_sig(tfm, desc->alg, desc->suite.sig.vecs,
+			       desc->suite.sig.count);
+
+	crypto_free_sig(tfm);
 	return err;
 }
 
@@ -4450,6 +4479,12 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
+		.alg = "authenc(hmac(sha256),cts(cbc(aes)))",
+		.test = alg_test_aead,
+		.suite = {
+			.aead = __VECS(krb5_test_aes128_cts_hmac_sha256_128)
+		}
+	}, {
 		.alg = "authenc(hmac(sha256),rfc3686(ctr(aes)))",
 		.test = alg_test_null,
 		.fips_allowed = 1,
@@ -4469,6 +4504,12 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.alg = "authenc(hmac(sha384),ctr(aes))",
 		.test = alg_test_null,
 		.fips_allowed = 1,
+	}, {
+		.alg = "authenc(hmac(sha384),cts(cbc(aes)))",
+		.test = alg_test_aead,
+		.suite = {
+			.aead = __VECS(krb5_test_aes256_cts_hmac_sha384_192)
+		}
 	}, {
 		.alg = "authenc(hmac(sha384),rfc3686(ctr(aes)))",
 		.test = alg_test_null,
@@ -4688,9 +4729,6 @@ static const struct alg_test_desc alg_test_descs[] = {
 			.hash = __VECS(sm4_cmac128_tv_template)
 		}
 	}, {
-		.alg = "compress_null",
-		.test = alg_test_null,
-	}, {
 		.alg = "crc32",
 		.test = alg_test_hash,
 		.fips_allowed = 1,
@@ -4703,20 +4741,6 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.fips_allowed = 1,
 		.suite = {
 			.hash = __VECS(crc32c_tv_template)
-		}
-	}, {
-		.alg = "crc64-rocksoft",
-		.test = alg_test_hash,
-		.fips_allowed = 1,
-		.suite = {
-			.hash = __VECS(crc64_rocksoft_tv_template)
-		}
-	}, {
-		.alg = "crct10dif",
-		.test = alg_test_hash,
-		.fips_allowed = 1,
-		.suite = {
-			.hash = __VECS(crct10dif_tv_template)
 		}
 	}, {
 		.alg = "ctr(aes)",
@@ -5127,36 +5151,36 @@ static const struct alg_test_desc alg_test_descs[] = {
 		}
 	}, {
 		.alg = "ecdsa-nist-p192",
-		.test = alg_test_akcipher,
+		.test = alg_test_sig,
 		.suite = {
-			.akcipher = __VECS(ecdsa_nist_p192_tv_template)
+			.sig = __VECS(ecdsa_nist_p192_tv_template)
 		}
 	}, {
 		.alg = "ecdsa-nist-p256",
-		.test = alg_test_akcipher,
+		.test = alg_test_sig,
 		.fips_allowed = 1,
 		.suite = {
-			.akcipher = __VECS(ecdsa_nist_p256_tv_template)
+			.sig = __VECS(ecdsa_nist_p256_tv_template)
 		}
 	}, {
 		.alg = "ecdsa-nist-p384",
-		.test = alg_test_akcipher,
+		.test = alg_test_sig,
 		.fips_allowed = 1,
 		.suite = {
-			.akcipher = __VECS(ecdsa_nist_p384_tv_template)
+			.sig = __VECS(ecdsa_nist_p384_tv_template)
 		}
 	}, {
 		.alg = "ecdsa-nist-p521",
-		.test = alg_test_akcipher,
+		.test = alg_test_sig,
 		.fips_allowed = 1,
 		.suite = {
-			.akcipher = __VECS(ecdsa_nist_p521_tv_template)
+			.sig = __VECS(ecdsa_nist_p521_tv_template)
 		}
 	}, {
 		.alg = "ecrdsa",
-		.test = alg_test_akcipher,
+		.test = alg_test_sig,
 		.suite = {
-			.akcipher = __VECS(ecrdsa_tv_template)
+			.sig = __VECS(ecrdsa_tv_template)
 		}
 	}, {
 		.alg = "essiv(authenc(hmac(sha256),cbc(aes)),sha256)",
@@ -5343,12 +5367,9 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.fips_allowed = 1,
 		.test = alg_test_null,
 	}, {
-		.alg = "kw(aes)",
-		.test = alg_test_skcipher,
-		.fips_allowed = 1,
-		.suite = {
-			.cipher = __VECS(aes_kw_tv_template)
-		}
+		.alg = "krb5enc(cmac(camellia),cts(cbc(camellia)))",
+		.test = alg_test_aead,
+		.suite.aead = __VECS(krb5_test_camellia_cts_cmac)
 	}, {
 		.alg = "lrw(aes)",
 		.generic_driver = "lrw(ecb(aes-generic))",
@@ -5449,40 +5470,68 @@ static const struct alg_test_desc alg_test_descs[] = {
 			.hash = __VECS(nhpoly1305_tv_template)
 		}
 	}, {
+		.alg = "p1363(ecdsa-nist-p192)",
+		.test = alg_test_null,
+	}, {
+		.alg = "p1363(ecdsa-nist-p256)",
+		.test = alg_test_sig,
+		.fips_allowed = 1,
+		.suite = {
+			.sig = __VECS(p1363_ecdsa_nist_p256_tv_template)
+		}
+	}, {
+		.alg = "p1363(ecdsa-nist-p384)",
+		.test = alg_test_null,
+		.fips_allowed = 1,
+	}, {
+		.alg = "p1363(ecdsa-nist-p521)",
+		.test = alg_test_null,
+		.fips_allowed = 1,
+	}, {
 		.alg = "pcbc(fcrypt)",
 		.test = alg_test_skcipher,
 		.suite = {
 			.cipher = __VECS(fcrypt_pcbc_tv_template)
 		}
 	}, {
-		.alg = "pkcs1pad(rsa,sha224)",
-		.test = alg_test_null,
-		.fips_allowed = 1,
-	}, {
-		.alg = "pkcs1pad(rsa,sha256)",
-		.test = alg_test_akcipher,
-		.fips_allowed = 1,
+		.alg = "pkcs1(rsa,none)",
+		.test = alg_test_sig,
 		.suite = {
-			.akcipher = __VECS(pkcs1pad_rsa_tv_template)
+			.sig = __VECS(pkcs1_rsa_none_tv_template)
 		}
 	}, {
-		.alg = "pkcs1pad(rsa,sha3-256)",
+		.alg = "pkcs1(rsa,sha224)",
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
-		.alg = "pkcs1pad(rsa,sha3-384)",
+		.alg = "pkcs1(rsa,sha256)",
+		.test = alg_test_sig,
+		.fips_allowed = 1,
+		.suite = {
+			.sig = __VECS(pkcs1_rsa_tv_template)
+		}
+	}, {
+		.alg = "pkcs1(rsa,sha3-256)",
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
-		.alg = "pkcs1pad(rsa,sha3-512)",
+		.alg = "pkcs1(rsa,sha3-384)",
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
-		.alg = "pkcs1pad(rsa,sha384)",
+		.alg = "pkcs1(rsa,sha3-512)",
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
-		.alg = "pkcs1pad(rsa,sha512)",
+		.alg = "pkcs1(rsa,sha384)",
+		.test = alg_test_null,
+		.fips_allowed = 1,
+	}, {
+		.alg = "pkcs1(rsa,sha512)",
+		.test = alg_test_null,
+		.fips_allowed = 1,
+	}, {
+		.alg = "pkcs1pad(rsa)",
 		.test = alg_test_null,
 		.fips_allowed = 1,
 	}, {
@@ -5656,12 +5705,6 @@ static const struct alg_test_desc alg_test_descs[] = {
 			.hash = __VECS(streebog512_tv_template)
 		}
 	}, {
-		.alg = "vmac64(aes)",
-		.test = alg_test_hash,
-		.suite = {
-			.hash = __VECS(vmac64_aes_tv_template)
-		}
-	}, {
 		.alg = "wp256",
 		.test = alg_test_hash,
 		.suite = {
@@ -5678,6 +5721,33 @@ static const struct alg_test_desc alg_test_descs[] = {
 		.test = alg_test_hash,
 		.suite = {
 			.hash = __VECS(wp512_tv_template)
+		}
+	}, {
+		.alg = "x962(ecdsa-nist-p192)",
+		.test = alg_test_sig,
+		.suite = {
+			.sig = __VECS(x962_ecdsa_nist_p192_tv_template)
+		}
+	}, {
+		.alg = "x962(ecdsa-nist-p256)",
+		.test = alg_test_sig,
+		.fips_allowed = 1,
+		.suite = {
+			.sig = __VECS(x962_ecdsa_nist_p256_tv_template)
+		}
+	}, {
+		.alg = "x962(ecdsa-nist-p384)",
+		.test = alg_test_sig,
+		.fips_allowed = 1,
+		.suite = {
+			.sig = __VECS(x962_ecdsa_nist_p384_tv_template)
+		}
+	}, {
+		.alg = "x962(ecdsa-nist-p521)",
+		.test = alg_test_sig,
+		.fips_allowed = 1,
+		.suite = {
+			.sig = __VECS(x962_ecdsa_nist_p521_tv_template)
 		}
 	}, {
 		.alg = "xcbc(aes)",

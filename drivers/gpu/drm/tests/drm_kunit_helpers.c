@@ -3,6 +3,7 @@
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_helper.h>
 #include <drm/drm_drv.h>
+#include <drm/drm_edid.h>
 #include <drm/drm_fourcc.h>
 #include <drm/drm_kunit_helpers.h>
 #include <drm/drm_managed.h>
@@ -78,47 +79,6 @@ __drm_kunit_helper_alloc_drm_device_with_driver(struct kunit *test,
 	return drm;
 }
 EXPORT_SYMBOL_GPL(__drm_kunit_helper_alloc_drm_device_with_driver);
-
-static void action_drm_release_context(void *ptr)
-{
-	struct drm_modeset_acquire_ctx *ctx = ptr;
-
-	drm_modeset_drop_locks(ctx);
-	drm_modeset_acquire_fini(ctx);
-}
-
-/**
- * drm_kunit_helper_acquire_ctx_alloc - Allocates an acquire context
- * @test: The test context object
- *
- * Allocates and initializes a modeset acquire context.
- *
- * The context is tied to the kunit test context, so we must not call
- * drm_modeset_acquire_fini() on it, it will be done so automatically.
- *
- * Returns:
- * An ERR_PTR on error, a pointer to the newly allocated context otherwise
- */
-struct drm_modeset_acquire_ctx *
-drm_kunit_helper_acquire_ctx_alloc(struct kunit *test)
-{
-	struct drm_modeset_acquire_ctx *ctx;
-	int ret;
-
-	ctx = kunit_kzalloc(test, sizeof(*ctx), GFP_KERNEL);
-	KUNIT_ASSERT_NOT_NULL(test, ctx);
-
-	drm_modeset_acquire_init(ctx, 0);
-
-	ret = kunit_add_action_or_reset(test,
-					action_drm_release_context,
-					ctx);
-	if (ret)
-		return ERR_PTR(ret);
-
-	return ctx;
-}
-EXPORT_SYMBOL_GPL(drm_kunit_helper_acquire_ctx_alloc);
 
 static void kunit_action_drm_atomic_state_put(void *ptr)
 {
@@ -310,6 +270,46 @@ drm_kunit_helper_create_crtc(struct kunit *test,
 	return crtc;
 }
 EXPORT_SYMBOL_GPL(drm_kunit_helper_create_crtc);
+
+static void kunit_action_drm_mode_destroy(void *ptr)
+{
+	struct drm_display_mode *mode = ptr;
+
+	drm_mode_destroy(NULL, mode);
+}
+
+/**
+ * drm_kunit_display_mode_from_cea_vic() - return a mode for CEA VIC for a KUnit test
+ * @test: The test context object
+ * @dev: DRM device
+ * @video_code: CEA VIC of the mode
+ *
+ * Creates a new mode matching the specified CEA VIC for a KUnit test.
+ *
+ * Resources will be cleaned up automatically.
+ *
+ * Returns: A new drm_display_mode on success or NULL on failure
+ */
+struct drm_display_mode *
+drm_kunit_display_mode_from_cea_vic(struct kunit *test, struct drm_device *dev,
+				    u8 video_code)
+{
+	struct drm_display_mode *mode;
+	int ret;
+
+	mode = drm_display_mode_from_cea_vic(dev, video_code);
+	if (!mode)
+		return NULL;
+
+	ret = kunit_add_action_or_reset(test,
+					kunit_action_drm_mode_destroy,
+					mode);
+	if (ret)
+		return NULL;
+
+	return mode;
+}
+EXPORT_SYMBOL_GPL(drm_kunit_display_mode_from_cea_vic);
 
 MODULE_AUTHOR("Maxime Ripard <maxime@cerno.tech>");
 MODULE_DESCRIPTION("KUnit test suite helper functions");

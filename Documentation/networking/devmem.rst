@@ -225,6 +225,15 @@ The user must ensure the tokens are returned to the kernel in a timely manner.
 Failure to do so will exhaust the limited dmabuf that is bound to the RX queue
 and will lead to packet drops.
 
+The user must pass no more than 128 tokens, with no more than 1024 total frags
+among the token->token_count across all the tokens. If the user provides more
+than 1024 frags, the kernel will free up to 1024 frags and return early.
+
+The kernel returns the number of actual frags freed. The number of frags freed
+can be less than the tokens provided by the user in case of:
+
+(a) an internal kernel leak bug.
+(b) the user passed more than 1024 frags.
 
 Implementation & Caveats
 ========================
@@ -247,7 +256,7 @@ Testing
 =======
 
 More realistic example code can be found in the kernel source under
-``tools/testing/selftests/net/ncdevmem.c``
+``tools/testing/selftests/drivers/net/hw/ncdevmem.c``
 
 ncdevmem is a devmem TCP netcat. It works very similarly to netcat, but
 receives data directly into a udmabuf.
@@ -259,8 +268,7 @@ ncdevmem has a validation mode as well that expects a repeating pattern of
 incoming data and validates it as such. For example, you can launch
 ncdevmem on the server by::
 
-	ncdevmem -s <server IP> -c <client IP> -f eth1 -d 3 -n 0000:06:00.0 -l \
-		 -p 5201 -v 7
+	ncdevmem -s <server IP> -c <client IP> -f <ifname> -l -p 5201 -v 7
 
 On client side, use regular netcat to send TX data to ncdevmem process
 on the server::

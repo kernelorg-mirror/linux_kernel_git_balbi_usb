@@ -24,6 +24,7 @@
 #define ACPI_BUTTON_CLASS		"button"
 #define ACPI_BUTTON_FILE_STATE		"state"
 #define ACPI_BUTTON_TYPE_UNKNOWN	0x00
+#define ACPI_BUTTON_NOTIFY_WAKE		0x02
 #define ACPI_BUTTON_NOTIFY_STATUS	0x80
 
 #define ACPI_BUTTON_SUBCLASS_POWER	"power"
@@ -127,6 +128,17 @@ static const struct dmi_system_id dmi_lid_quirks[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "Razer"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Razer Blade Stealth 13 Late 2019"),
+		},
+		.driver_data = (void *)(long)ACPI_BUTTON_LID_INIT_OPEN,
+	},
+	{
+		/*
+		 * Samsung galaxybook2 ,initial _LID device notification returns
+		 * lid closed.
+		 */
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
+			DMI_MATCH(DMI_PRODUCT_NAME, "750XED"),
 		},
 		.driver_data = (void *)(long)ACPI_BUTTON_LID_INIT_OPEN,
 	},
@@ -432,7 +444,12 @@ static void acpi_button_notify(acpi_handle handle, u32 event, void *data)
 	struct input_dev *input;
 	int keycode;
 
-	if (event != ACPI_BUTTON_NOTIFY_STATUS) {
+	switch (event) {
+	case ACPI_BUTTON_NOTIFY_STATUS:
+		break;
+	case ACPI_BUTTON_NOTIFY_WAKE:
+		break;
+	default:
 		acpi_handle_debug(device->handle, "Unsupported event [0x%x]\n",
 				  event);
 		return;
@@ -618,7 +635,7 @@ static int acpi_button_add(struct acpi_device *device)
 		break;
 	default:
 		status = acpi_install_notify_handler(device->handle,
-						     ACPI_DEVICE_NOTIFY, handler,
+						     ACPI_ALL_NOTIFY, handler,
 						     device);
 		break;
 	}

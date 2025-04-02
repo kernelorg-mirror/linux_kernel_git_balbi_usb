@@ -797,13 +797,12 @@ static int c8sectpfe_probe(struct platform_device *pdev)
 		}
 		tsin->i2c_adapter =
 			of_find_i2c_adapter_by_node(i2c_bus);
+		of_node_put(i2c_bus);
 		if (!tsin->i2c_adapter) {
 			dev_err(&pdev->dev, "No i2c adapter found\n");
-			of_node_put(i2c_bus);
 			ret = -ENODEV;
 			goto err_node_put;
 		}
-		of_node_put(i2c_bus);
 
 		/* Acquire reset GPIO and activate it */
 		tsin->rst_gpio = devm_fwnode_gpiod_get(dev,
@@ -1158,7 +1157,7 @@ static struct platform_driver c8sectpfe_driver = {
 		.of_match_table = c8sectpfe_match,
 	},
 	.probe	= c8sectpfe_probe,
-	.remove_new = c8sectpfe_remove,
+	.remove = c8sectpfe_remove,
 };
 
 module_platform_driver(c8sectpfe_driver);

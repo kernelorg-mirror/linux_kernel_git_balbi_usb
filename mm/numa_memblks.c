@@ -7,7 +7,7 @@
 #include <linux/numa.h>
 #include <linux/numa_memblks.h>
 
-static int numa_distance_cnt;
+int numa_distance_cnt;
 static u8 *numa_distance;
 
 nodemask_t numa_nodes_parsed __initdata;
@@ -349,7 +349,7 @@ static void __init numa_clear_kernel_node_hotplug(void)
 	for_each_reserved_mem_region(mb_region) {
 		int nid = memblock_get_region_node(mb_region);
 
-		if (nid != MAX_NUMNODES)
+		if (numa_valid_node(nid))
 			node_set(nid, reserved_nodemask);
 	}
 

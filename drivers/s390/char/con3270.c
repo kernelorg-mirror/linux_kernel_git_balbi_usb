@@ -23,6 +23,7 @@
 #include <linux/memblock.h>
 #include <linux/compat.h>
 
+#include <asm/machine.h>
 #include <asm/ccwdev.h>
 #include <asm/cio.h>
 #include <asm/ebcdic.h>
@@ -528,7 +529,7 @@ static void tty3270_update(struct timer_list *t)
 	u8 cmd = TC_WRITE;
 	int rc, len;
 
-	wrq = xchg(&tp->write, 0);
+	wrq = xchg(&tp->write, NULL);
 	if (!wrq) {
 		tty3270_set_timer(tp, 1);
 		return;
@@ -746,7 +747,7 @@ static void tty3270_issue_read(struct tty3270 *tp, int lock)
 	struct raw3270_request *rrq;
 	int rc;
 
-	rrq = xchg(&tp->read, 0);
+	rrq = xchg(&tp->read, NULL);
 	if (!rrq)
 		/* Read already scheduled. */
 		return;
@@ -2156,7 +2157,7 @@ con3270_init(void)
 		return -ENODEV;
 
 	/* Set the console mode for VM */
-	if (MACHINE_IS_VM) {
+	if (machine_is_vm()) {
 		cpcmd("TERM CONMODE 3270", NULL, 0, NULL);
 		cpcmd("TERM AUTOCR OFF", NULL, 0, NULL);
 	}

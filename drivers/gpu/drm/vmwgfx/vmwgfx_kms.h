@@ -199,9 +199,6 @@ struct vmw_kms_dirty {
 	s32 unit_y2;
 };
 
-#define VMWGFX_NUM_DISPLAY_UNITS 8
-
-
 #define vmw_framebuffer_to_vfb(x) \
 	container_of(x, struct vmw_framebuffer, base)
 #define vmw_framebuffer_to_vfbs(x) \
@@ -438,7 +435,7 @@ int vmw_kms_helper_dirty(struct vmw_private *dev_priv,
 			 int increment,
 			 struct vmw_kms_dirty *dirty);
 enum drm_mode_status vmw_connector_mode_valid(struct drm_connector *connector,
-					      struct drm_display_mode *mode);
+					      const struct drm_display_mode *mode);
 int vmw_connector_get_modes(struct drm_connector *connector);
 
 void vmw_kms_helper_validation_finish(struct vmw_private *dev_priv,
