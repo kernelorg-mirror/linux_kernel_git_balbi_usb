@@ -4,7 +4,7 @@ config BCACHEFS_FS
 	depends on BLOCK
 	select EXPORTFS
 	select CLOSURES
-	select LIBCRC32C
+	select CRC32
 	select CRC64
 	select FS_POSIX_ACL
 	select LZ4_COMPRESS
@@ -26,6 +26,7 @@ config BCACHEFS_FS
 	select SRCU
 	select SYMBOLIC_ERRNAME
 	select MIN_HEAP
+	select XARRAY_MULTI
 	help
 	The bcachefs filesystem - a modern, copy on write filesystem, with
 	support for multiple devices, compression, checksumming, etc.
